@@ -69,7 +69,7 @@ where
                     let prime = if number < 0 {
                         false
                     } else {
-                        primal::is_prime(number.abs() as u64)
+                        primal::is_prime(number.unsigned_abs())
                     };
                     let response = Response::wellformed(prime);
                     writer.write(&response).await?;
