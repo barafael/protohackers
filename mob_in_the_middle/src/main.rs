@@ -1,12 +1,12 @@
-use futures::{FutureExt, SinkExt, StreamExt};
+use futures::{FutureExt, StreamExt};
 use std::env;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
-
-use bogus::TONYS_ADDRESS;
+use tokio_util::codec::{BytesCodec, FramedRead, FramedWrite};
 
 mod bogus;
+mod proxy;
+mod request;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -24,14 +24,14 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = TcpListener::bind(listen_addr).await?;
 
-    while let Ok((inbound, _)) = listener.accept().await {
-        let transfer = transfer(inbound, server_addr.clone()).map(|r| {
-            if let Err(e) = r {
-                println!("Failed to transfer; error={e}");
-            }
+    while let Ok((mut inbound, _)) = listener.accept().await {
+        tokio::spawn(async move {
+            let (reader, writer) = inbound.split();
+            let codec = request::RequestDecoder::default();
+            let reader = FramedRead::new(reader, codec);
+            let writer = FramedWrite::new(writer, BytesCodec::new());
+            reader.forward(writer).await.unwrap();
         });
-
-        tokio::spawn(transfer);
     }
 
     Ok(())
@@ -40,51 +40,17 @@ async fn main() -> anyhow::Result<()> {
 async fn transfer(mut inbound: TcpStream, proxy_addr: String) -> anyhow::Result<()> {
     let mut outbound = TcpStream::connect(proxy_addr).await?;
 
-    let (ri, wi) = inbound.split();
-    let (ro, wo) = outbound.split();
-
-    let codec = LinesCodec::new();
-
-    let mut ri = FramedRead::new(ri, codec.clone());
-    let mut wi = FramedWrite::new(wi, codec.clone());
-
-    let mut ro = FramedRead::new(ro, codec.clone());
-    let mut wo = FramedWrite::new(wo, codec);
+    let (mut ri, mut wi) = inbound.split();
+    let (mut ro, mut wo) = outbound.split();
 
     let client_to_server = async {
-        loop {
-            let msg = ri.next().await;
-            if let Some(Ok(msg)) = msg {
-                let replaced = bogus::RE
-                    .replace_all(&msg, format!("{TONYS_ADDRESS}$2"))
-                    .to_string();
-                dbg!(&replaced);
-                if let Err(_e) = wo.send(replaced).await {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-        wo.into_inner().shutdown().await
+        proxy::proxy(&mut ri, &mut wo).await?;
+        wo.shutdown().await
     };
 
     let server_to_client = async {
-        loop {
-            let msg = ro.next().await;
-            if let Some(Ok(msg)) = msg {
-                let replaced = bogus::RE
-                    .replace_all(&msg, format!("{TONYS_ADDRESS}$2"))
-                    .to_string();
-                dbg!(&replaced);
-                if let Err(_e) = wi.send(replaced).await {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-        wi.into_inner().shutdown().await
+        proxy::proxy(&mut ro, &mut wi).await?;
+        wi.shutdown().await
     };
 
     tokio::try_join!(client_to_server, server_to_client)?;
