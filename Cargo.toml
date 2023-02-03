@@ -1,3 +1,10 @@
 [workspace]
 
-members = ["echo", "primes_service", "time_price"]
+members = [
+    "echo",
+    "primes_service",
+    "time_price",
+    "budget_chat",
+    "unusual_db",
+    "mob_in_the_middle",
+]
