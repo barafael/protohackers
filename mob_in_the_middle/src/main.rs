@@ -1,12 +1,12 @@
-use futures::{FutureExt, StreamExt};
+use futures::StreamExt;
 use std::env;
-use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::{BytesCodec, FramedRead, FramedWrite};
 
 mod bogus;
+mod message;
+#[allow(unused)]
 mod proxy;
-mod request;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -19,41 +19,27 @@ async fn main() -> anyhow::Result<()> {
         .nth(2)
         .unwrap_or_else(|| legitimate_origin.to_string());
 
-    println!("Listening on: {listen_addr}");
-    println!("Proxying to: {server_addr}");
+    println!("Listening on: {listen_addr}!");
+    println!("Proxying to: {server_addr}!");
 
     let listener = TcpListener::bind(listen_addr).await?;
 
     while let Ok((mut inbound, _)) = listener.accept().await {
+        let server_addr = server_addr.clone();
         tokio::spawn(async move {
             let (reader, writer) = inbound.split();
-            let codec = request::RequestDecoder::default();
+            let codec = message::MessageDecoder::default();
             let reader = FramedRead::new(reader, codec);
-            let writer = FramedWrite::new(writer, BytesCodec::new());
-            reader.forward(writer).await.unwrap();
+            let mut writer = FramedWrite::new(writer, BytesCodec::new());
+            let mut remote = TcpStream::connect(server_addr).await.unwrap();
+            let (remote_reader, remote_writer) = remote.split();
+            let mut remote_writer = FramedWrite::new(remote_writer, BytesCodec::new());
+            let remote_reader = FramedRead::new(remote_reader, BytesCodec::new());
+            let upstream = reader.forward(&mut remote_writer);
+            let downstream = remote_reader.forward(&mut writer);
+            dbg!(tokio::try_join!(upstream, downstream));
         });
     }
-
-    Ok(())
-}
-
-async fn transfer(mut inbound: TcpStream, proxy_addr: String) -> anyhow::Result<()> {
-    let mut outbound = TcpStream::connect(proxy_addr).await?;
-
-    let (mut ri, mut wi) = inbound.split();
-    let (mut ro, mut wo) = outbound.split();
-
-    let client_to_server = async {
-        proxy::proxy(&mut ri, &mut wo).await?;
-        wo.shutdown().await
-    };
-
-    let server_to_client = async {
-        proxy::proxy(&mut ro, &mut wi).await?;
-        wi.shutdown().await
-    };
-
-    tokio::try_join!(client_to_server, server_to_client)?;
 
     Ok(())
 }
