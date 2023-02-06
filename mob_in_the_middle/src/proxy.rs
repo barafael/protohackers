@@ -4,7 +4,8 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::net::TcpStream;
 
 macro_rules! ready {
     ($e:expr $(,)?) => {
@@ -13,6 +14,27 @@ macro_rules! ready {
             std::task::Poll::Pending => return std::task::Poll::Pending,
         }
     };
+}
+
+async fn transfer(mut inbound: TcpStream, proxy_addr: String) -> anyhow::Result<()> {
+    let mut outbound = TcpStream::connect(proxy_addr).await?;
+
+    let (mut ri, mut wi) = inbound.split();
+    let (mut ro, mut wo) = outbound.split();
+
+    let client_to_server = async {
+        proxy(&mut ri, &mut wo).await?;
+        wo.shutdown().await
+    };
+
+    let server_to_client = async {
+        proxy(&mut ro, &mut wi).await?;
+        wi.shutdown().await
+    };
+
+    tokio::try_join!(client_to_server, server_to_client)?;
+
+    Ok(())
 }
 
 /// A future that asynchronously copies the entire contents of a reader into a
