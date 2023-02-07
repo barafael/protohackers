@@ -6,6 +6,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 pub mod decoder;
+pub mod encoder;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Message {

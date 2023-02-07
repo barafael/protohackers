@@ -76,7 +76,7 @@ impl Decoder for MessageDecoder {
                     src.advance(1 + 1 + *len as usize);
                     Ok(Some(Self::Item::IAmDispatcher(bytes)))
                 }
-                n => unreachable!("{n}"),
+                n => anyhow::bail!("Invalid opcode {n}"),
             }
         } else {
             Ok(None)

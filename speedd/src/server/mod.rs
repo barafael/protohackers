@@ -1,3 +1,4 @@
+pub mod decoder;
 pub mod encoder;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

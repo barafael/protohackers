@@ -65,6 +65,7 @@ impl Collector {
                     let delta_m = mile1.abs_diff(*mile2);
                     let speed = delta_m as f32 / (delta_t as f32 * 60.0 * 60.0);
                     let speed = speed.round() as u16;
+                    let speed = 100 * speed;
                     if &speed > self.limits.get(road).unwrap() {
                         let mut ticket = TicketRecord {
                             plate: car.clone(),
@@ -88,6 +89,7 @@ impl Collector {
                         }
                         if !sent {
                             self.backlog.insert(*road, ticket);
+                            todo!("backlog emptying");
                         }
                     }
                 }
