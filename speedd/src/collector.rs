@@ -1,88 +1,99 @@
 use crate::{
     camera::{Camera, PlateRecord},
     server::TicketRecord,
-    Dispatchers, Limit, Mile, Road, Timestamp,
+    Limit, Mile, Road, Timestamp,
 };
 use itertools::Itertools;
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::{Arc, RwLock},
-};
+use std::collections::{BTreeMap, HashMap};
 use tokio::sync::mpsc;
 
 pub struct Collector {
     receiver: mpsc::Receiver<(PlateRecord, Camera)>,
-    dispatchers: Arc<RwLock<Dispatchers>>,
     records: HashMap<String, HashMap<Road, BTreeMap<Timestamp, Mile>>>,
     limits: HashMap<Road, Limit>,
+    dispatchers: HashMap<Road, Vec<mpsc::Sender<TicketRecord>>>,
+    backlog: HashMap<Road, TicketRecord>,
 }
 
 impl Collector {
-    pub fn new(
-        receiver: mpsc::Receiver<(PlateRecord, Camera)>,
-        dispatchers: Arc<RwLock<Dispatchers>>,
-    ) -> Self {
+    pub fn new(receiver: mpsc::Receiver<(PlateRecord, Camera)>) -> Self {
         Self {
             receiver,
-            dispatchers,
+            dispatchers: HashMap::default(),
             records: HashMap::default(),
             limits: HashMap::default(),
+            backlog: HashMap::default(),
         }
     }
 
     pub async fn run(
         mut self,
+        mut subscription: mpsc::Receiver<(Road, mpsc::Sender<TicketRecord>)>,
     ) -> anyhow::Result<(
         HashMap<String, HashMap<Road, BTreeMap<Timestamp, Mile>>>,
         HashMap<Road, Limit>,
     )> {
-        while let Some((PlateRecord { plate, timestamp }, Camera { road, mile, limit })) =
-            self.receiver.recv().await
-        {
-            self.limits.insert(road, limit);
-            *self
-                .records
-                .entry(plate.clone())
-                .or_default()
-                .entry(road)
-                .or_default()
-                .entry(timestamp)
-                .or_default() = mile;
-            for (car, road_to_records) in &self.records {
-                for (road, records) in road_to_records {
-                    for ((ts1, mile1), (ts2, mile2)) in records.iter().tuple_windows() {
-                        let delta_t = ts1.abs_diff(*ts2);
-                        let delta_m = mile1.abs_diff(*mile2);
-                        let speed = delta_m as f32 / (delta_t as f32 * 60.0 * 60.0);
-                        let speed = speed.round() as u16;
-                        if &speed > self.limits.get(&road).unwrap() {
-                            let mut ticket = TicketRecord {
-                                plate: car.clone(),
-                                road: *road,
-                                mile1: *mile1,
-                                timestamp1: *ts1,
-                                mile2: *mile2,
-                                timestamp2: *ts2,
-                                speed,
-                            };
-                            let dispatchers = self.dispatchers.read().unwrap();
-                            let mut vec = Vec::new();
-                            if let Some(cbs) = dispatchers.get(road) {
-                                for cb in cbs {
-                                    vec.extend(cbs);
-                                    if let Err(e) = cb.send(ticket).await {
-                                        ticket = e.0;
-                                    } else {
-                                        break;
-                                    }
+        tokio::select! {
+            Some((record, camera)) = self.receiver.recv() => {
+                self.handle_plate(record, camera).await?;
+            }
+            Some((road, sender)) = subscription.recv() => {
+                self.dispatchers.entry(road).or_default().push(sender)
+            }
+        }
+        Ok((self.records, self.limits))
+    }
+
+    pub async fn handle_plate(
+        &mut self,
+        PlateRecord { plate, timestamp }: PlateRecord,
+        Camera { road, mile, limit }: Camera,
+    ) -> anyhow::Result<()> {
+        self.limits.insert(road, limit);
+        *self
+            .records
+            .entry(plate.clone())
+            .or_default()
+            .entry(road)
+            .or_default()
+            .entry(timestamp)
+            .or_default() = mile;
+        for (car, road_to_records) in &self.records {
+            for (road, records) in road_to_records {
+                for ((ts1, mile1), (ts2, mile2)) in records.iter().tuple_windows() {
+                    let delta_t = ts1.abs_diff(*ts2);
+                    let delta_m = mile1.abs_diff(*mile2);
+                    let speed = delta_m as f32 / (delta_t as f32 * 60.0 * 60.0);
+                    let speed = speed.round() as u16;
+                    if &speed > self.limits.get(road).unwrap() {
+                        let mut ticket = TicketRecord {
+                            plate: car.clone(),
+                            road: *road,
+                            mile1: *mile1,
+                            timestamp1: *ts1,
+                            mile2: *mile2,
+                            timestamp2: *ts2,
+                            speed,
+                        };
+                        let mut sent = false;
+                        if let Some(cbs) = self.dispatchers.get(road) {
+                            for cb in cbs {
+                                if let Err(e) = cb.send(ticket.clone()).await {
+                                    ticket = e.0;
+                                } else {
+                                    sent = true;
+                                    break;
                                 }
                             }
+                        }
+                        if !sent {
+                            self.backlog.insert(*road, ticket);
                         }
                     }
                 }
             }
         }
-        Ok((self.records, self.limits))
+        Ok(())
     }
 }
 
@@ -93,8 +104,8 @@ mod test {
     #[tokio::test]
     async fn example() {
         let (sender, receiver) = mpsc::channel(3);
-        let dispatchers = Arc::new(RwLock::new(Dispatchers::default()));
-        let col = Collector::new(receiver, dispatchers);
+        let (_disp_tx, disp_rx) = mpsc::channel(1);
+        let col = Collector::new(receiver);
         sender
             .send((
                 PlateRecord {
@@ -138,7 +149,7 @@ mod test {
             .await
             .unwrap();
         drop(sender);
-        let val = col.run().await.unwrap();
+        let val = col.run(disp_rx).await.unwrap();
         dbg!(val);
     }
 }

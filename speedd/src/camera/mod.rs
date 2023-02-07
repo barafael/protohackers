@@ -20,7 +20,7 @@ impl Camera {
         self,
         mut reader: R,
         mut writer: W,
-        mut plate_tx: mpsc::Sender<(PlateRecord, Camera)>,
+        plate_tx: mpsc::Sender<(PlateRecord, Camera)>,
         mut heartbeat_sender: Option<mpsc::Sender<()>>,
         mut heartbeat_receiver: mpsc::Receiver<()>,
     ) -> anyhow::Result<()>
@@ -31,7 +31,7 @@ impl Camera {
         loop {
             tokio::select! {
                 Some(Ok(msg)) = reader.next() => {
-                    self.handle_client_message(msg, &mut writer, &mut plate_tx, &mut heartbeat_sender).await?;
+                    self.handle_client_message(msg, &mut writer, &plate_tx, &mut heartbeat_sender).await?;
                 }
                 Some(()) = heartbeat_receiver.recv() => {
                     writer.send(server::Message::Heartbeat).await?;

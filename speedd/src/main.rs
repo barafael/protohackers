@@ -7,9 +7,7 @@ use camera::PlateRecord;
 use collector::Collector;
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use server::TicketRecord;
-use std::collections::HashMap;
 use std::env;
-use std::sync::{Arc, RwLock};
 use tokio::{net::TcpListener, sync::mpsc};
 use tokio_util::codec::{FramedRead, FramedWrite};
 
@@ -19,8 +17,6 @@ mod collector;
 mod dispatcher;
 mod heartbeat;
 mod server;
-
-pub type Dispatchers = HashMap<Road, Vec<mpsc::Sender<TicketRecord>>>;
 
 pub type Timestamp = u32;
 pub type Mile = u16;
@@ -36,9 +32,9 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(listen_addr).await?;
 
     let (plate_tx, plate_rx) = mpsc::channel(256);
-    let dispatchers = Arc::new(RwLock::new(Dispatchers::default()));
+    let (dispatcher_tx, dispatcher_rx) = mpsc::channel(16);
 
-    tokio::spawn(Collector::new(plate_rx, dispatchers.clone()).run());
+    tokio::spawn(Collector::new(plate_rx).run(dispatcher_rx));
 
     while let Ok((inbound, addr)) = listener.accept().await {
         println!("Accepted connection from {addr}");
@@ -46,9 +42,9 @@ async fn main() -> anyhow::Result<()> {
         let reader = FramedRead::new(reader, client::decoder::MessageDecoder::default());
         let writer = FramedWrite::new(writer, server::encoder::MessageEncoder::default());
         let plate_tx = plate_tx.clone();
-        let dispatchers = dispatchers.clone();
+        let dispatcher_tx = dispatcher_tx.clone();
         tokio::spawn(async move {
-            handle_connection(reader, writer, plate_tx, dispatchers)
+            handle_connection(reader, writer, plate_tx, dispatcher_tx)
                 .await
                 .unwrap();
         });
@@ -61,7 +57,7 @@ async fn handle_connection<R, W>(
     mut reader: R,
     mut writer: W,
     plate_tx: mpsc::Sender<(PlateRecord, Camera)>,
-    dispatchers: Arc<RwLock<Dispatchers>>,
+    dispatcher_tx: mpsc::Sender<(Road, mpsc::Sender<TicketRecord>)>,
 ) -> anyhow::Result<()>
 where
     R: Stream<Item = Result<client::Message, anyhow::Error>> + Unpin,
@@ -81,7 +77,7 @@ where
                         break;
                     }
                     Action::SpawnDispatcher(r) => {
-                        let dispatcher = Dispatcher::new(r, dispatchers.clone());
+                        let dispatcher = Dispatcher::new(&r, &dispatcher_tx).await?;
                         Dispatcher::run(dispatcher, reader, writer, heartbeat_sender, heartbeat_receiver).await?;
                         break;
                     }
@@ -103,7 +99,6 @@ mod test {
 
     #[tokio::test]
     async fn example() {
-        let server_encoder = server::encoder::MessageEncoder::default();
         let client_decoder = client::decoder::MessageDecoder::default();
 
         let client_1 = Builder::new()

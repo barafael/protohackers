@@ -1,27 +1,26 @@
 use crate::{
     client, heartbeat,
     server::{self, TicketRecord},
-    Dispatchers,
+    Road,
 };
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 
 #[derive(Debug)]
 pub struct Dispatcher {
-    roads: Vec<u16>,
     receiver: mpsc::Receiver<TicketRecord>,
 }
 
 impl Dispatcher {
-    pub fn new(roads: Vec<u16>, dispatchers: Arc<RwLock<Dispatchers>>) -> Self {
+    pub async fn new(
+        roads: &[u16],
+        dispatchers: &mpsc::Sender<(Road, mpsc::Sender<TicketRecord>)>,
+    ) -> anyhow::Result<Self> {
         let (ticket_tx, receiver) = mpsc::channel(32);
-        let mut map = dispatchers.write().unwrap();
-        for road in &roads {
-            let ticket_tx = ticket_tx.clone();
-            map.entry(*road).or_default().push(ticket_tx);
+        for road in roads {
+            dispatchers.send((*road, ticket_tx.clone())).await?;
         }
-        Self { roads, receiver }
+        Ok(Self { receiver })
     }
 
     pub async fn run<R, W>(
