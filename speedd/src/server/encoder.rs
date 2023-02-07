@@ -1,23 +1,6 @@
-use bytes::{Buf, BufMut};
+use super::{Message, TicketRecord};
+use bytes::BufMut;
 use tokio_util::codec::Encoder;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Message {
-    Error(String),
-    Ticket(TicketRecord),
-    Heartbeat,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TicketRecord {
-    plate: String,
-    road: u16,
-    mile1: u16,
-    timestamp1: u32,
-    mile2: u16,
-    timestamp2: u32,
-    speed: u16,
-}
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct MessageEncoder;
@@ -31,7 +14,7 @@ impl Encoder<Message> for MessageEncoder {
                 let bytes = msg.as_bytes();
                 dst.put_u8(0x10);
                 dst.put_u8(bytes.len() as u8);
-                dst.put_slice(&bytes);
+                dst.put_slice(bytes);
             }
             Message::Ticket(TicketRecord {
                 plate,

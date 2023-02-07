@@ -1,27 +1,14 @@
+use crate::camera::{Camera, PlateRecord};
 use bytes::Buf;
 use itertools::Itertools;
 use std::time::Duration;
 use tokio_util::codec::Decoder;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Message {
-    Plate(PlateRecord),
-    WantHeartbeat(Duration),
-    IAmCamera { road: u16, mile: u16, limit: u16 },
-    IAmDispatcher(Vec<u16>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct PlateRecord {
-    pub plate: String,
-    pub timestamp: u32,
-}
-
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
 pub struct MessageDecoder;
 
 impl Decoder for MessageDecoder {
-    type Item = Message;
+    type Item = crate::client::Message;
 
     type Error = anyhow::Error;
 
@@ -39,12 +26,12 @@ impl Decoder for MessageDecoder {
                                 .try_into()
                                 .unwrap(),
                         );
-                        let plate = Message::Plate(PlateRecord {
+                        let plate = Self::Item::Plate(PlateRecord {
                             plate: bytes.to_string(),
                             timestamp,
                         });
                         src.advance(1 + 1 + *len as usize + 4);
-                        return Ok(Some(plate));
+                        Ok(Some(plate))
                     } else {
                         Ok(None)
                     }
@@ -55,7 +42,7 @@ impl Decoder for MessageDecoder {
                         let deciseconds = src.get_u32();
                         let millis = deciseconds * 100;
                         let dur = Duration::from_millis(millis as u64);
-                        return Ok(Some(Message::WantHeartbeat(dur)));
+                        Ok(Some(Self::Item::WantHeartbeat(dur)))
                     } else {
                         Ok(None)
                     }
@@ -66,7 +53,7 @@ impl Decoder for MessageDecoder {
                         let road = src.get_u16();
                         let mile = src.get_u16();
                         let limit = src.get_u16();
-                        return Ok(Some(Message::IAmCamera { road, mile, limit }));
+                        Ok(Some(Self::Item::IAmCamera(Camera { road, mile, limit })))
                     } else {
                         Ok(None)
                     }
@@ -81,19 +68,18 @@ impl Decoder for MessageDecoder {
                     let bytes = src
                         .iter()
                         .skip(2)
-                        .cloned()
+                        .copied()
                         .array_chunks::<2>()
-                        .into_iter()
                         .take(*len as usize)
-                        .map(|a| u16::from_be_bytes(a.into()))
+                        .map(u16::from_be_bytes)
                         .collect_vec();
                     src.advance(1 + 1 + *len as usize);
-                    return Ok(Some(Message::IAmDispatcher(bytes)));
+                    Ok(Some(Self::Item::IAmDispatcher(bytes)))
                 }
                 n => unreachable!("{n}"),
             }
         } else {
-            return Ok(None);
+            Ok(None)
         }
     }
 }
@@ -101,6 +87,7 @@ impl Decoder for MessageDecoder {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::client;
     use bytes::BytesMut;
 
     #[test]
@@ -116,7 +103,7 @@ mod test {
         assert!(matches!(first, Ok(None)));
 
         let second = decoder.decode(&mut input).unwrap().unwrap();
-        let expected = Message::Plate(PlateRecord {
+        let expected = client::Message::Plate(PlateRecord {
             plate: "RE05BKG".to_string(),
             timestamp: 123456,
         });
@@ -132,7 +119,7 @@ mod test {
         assert!(matches!(first, Ok(None)));
 
         let second = decoder.decode(&mut input).unwrap().unwrap();
-        let expected = Message::IAmDispatcher(vec![66, 368, 5000]);
+        let expected = client::Message::IAmDispatcher(vec![66, 368, 5000]);
         assert_eq!(expected, second);
     }
 }

@@ -9,7 +9,7 @@ where
 {
     fn mean(self) -> f64 {
         self.zip(1..).fold(0., |s, (e, i)| {
-            (*e.borrow() as f64 + s * f64::from(i - 1)) / f64::from(i)
+            (f64::from(*e.borrow()) + s * f64::from(i - 1)) / f64::from(i)
         })
     }
 }
