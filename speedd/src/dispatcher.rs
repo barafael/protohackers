@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 
 #[derive(Debug)]
 pub struct Dispatcher {
-    receiver: mpsc::Receiver<TicketRecord>,
+    tickets: mpsc::Receiver<TicketRecord>,
 }
 
 impl Dispatcher {
@@ -21,7 +21,7 @@ impl Dispatcher {
         for road in roads {
             dispatchers.send((*road, ticket_tx.clone())).await?;
         }
-        Ok(Self { receiver })
+        Ok(Self { tickets: receiver })
     }
 
     pub async fn run<R, W>(
@@ -29,22 +29,23 @@ impl Dispatcher {
         mut reader: R,
         mut writer: W,
         mut heartbeat_sender: Option<mpsc::Sender<()>>,
-        mut heartbeat_receiver: mpsc::Receiver<()>,
+        mut heartbeats: mpsc::Receiver<()>,
     ) -> anyhow::Result<()>
     where
         R: Stream<Item = Result<client::Message, anyhow::Error>> + Unpin,
         W: Sink<server::Message, Error = anyhow::Error> + Unpin,
     {
+        println!("Starting Dispatcher Client loop");
         loop {
             tokio::select! {
                 Some(Ok(msg)) = reader.next() => {
                     println!("Received dispatcher message {msg:?}");
                     Self::handle_client_message(msg, &mut writer, &mut heartbeat_sender).await?;
                 }
-                Some(msg) = self.receiver.recv() => {
+                Some(msg) = self.tickets.recv() => {
                     writer.send(server::Message::Ticket(msg)).await?;
                 }
-                Some(()) = heartbeat_receiver.recv() => {
+                Some(()) = heartbeats.recv() => {
                     writer.send(server::Message::Heartbeat).await?;
                 }
             }

@@ -1,61 +1,21 @@
-use anyhow::Context;
-use clap::{Parser, Subcommand};
+use args::{Arguments, Mode};
+use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use rustyline::error::ReadlineError;
-use std::{net::SocketAddr, time::Duration};
-use tokio::net::TcpStream;
-use tokio_util::codec::{FramedRead, FramedWrite};
-
 use speedd_codecs::{
     camera::Camera,
     client::{self, encoder::MessageEncoder as Encoder},
     plate::PlateRecord,
     server::decoder::MessageDecoder as Decoder,
 };
+use tokio::net::TcpStream;
+use tokio_util::codec::{FramedRead, FramedWrite};
 
-fn parse_hex_digit(s: &str) -> anyhow::Result<u16> {
-    u16::from_str_radix(s, 16).context("Failed to parse hex byte")
-}
-
-#[derive(Debug, Parser)]
-#[command(author, version)]
-pub struct Args {
-    /// Address to connect to
-    #[arg(short, long, default_value = "127.0.0.1:8000")]
-    address: SocketAddr,
-
-    /// Heartbeat interval duration (off by default)
-    #[arg(long, short, default_value_t = Duration::ZERO.into())]
-    interval: humantime::Duration,
-
-    #[command(subcommand)]
-    mode: Mode,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum Mode {
-    Dispatcher {
-        #[arg(num_args = 1.., value_delimiter = ' ', value_parser = parse_hex_digit)]
-        roads: Vec<u16>,
-    },
-    Camera {
-        /// Road ID
-        #[arg(short, long)]
-        road: u16,
-
-        /// Camera position
-        #[arg(short, long)]
-        mile: u16,
-
-        /// Speed limits in `mp/h x 100` (yes, I know, but that's the problem statetment)
-        #[arg(short, long)]
-        limit: u16,
-    },
-}
+mod args;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let args = Arguments::parse();
 
     let client = TcpStream::connect(args.address).await?;
     let (reader, writer) = client.into_split();
@@ -90,6 +50,11 @@ async fn main() -> anyhow::Result<()> {
             println!("Finished listening loop");
         }
         Mode::Camera { road, mile, limit } => {
+            tokio::task::spawn(async move {
+                while let Some(Ok(msg)) = reader.next().await {
+                    println!("{msg:?}");
+                }
+            });
             writer
                 .send(client::Message::IAmCamera(Camera { road, mile, limit }))
                 .await?;
@@ -103,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
                         match (tokens.next(), tokens.next()) {
                             (Some(plate), Some(timestamp)) => {
                                 if let Ok(timestamp) = timestamp.parse() {
+                                    rl.add_history_entry(&line);
                                     let message = client::Message::Plate(PlateRecord {
                                         plate: plate.to_string(),
                                         timestamp,
@@ -130,7 +96,5 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
-    drop(reader);
-    drop(writer);
     Ok(())
 }
