@@ -1,4 +1,4 @@
-use crate::camera::{Camera, PlateRecord};
+use crate::{camera::Camera, plate::PlateRecord};
 use bytes::Buf;
 use itertools::Itertools;
 use std::time::Duration;
@@ -76,7 +76,7 @@ impl Decoder for MessageDecoder {
                     src.advance(1 + 1 + *len as usize);
                     Ok(Some(Self::Item::IAmDispatcher(bytes)))
                 }
-                n => anyhow::bail!("Invalid opcode {n}"),
+                n => anyhow::bail!("Invalid opcode 0x{n:x}"),
             }
         } else {
             Ok(None)

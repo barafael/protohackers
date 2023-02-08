@@ -1,9 +1,6 @@
-use crate::{
-    camera::{Camera, PlateRecord},
-    server::TicketRecord,
-    Limit, Mile, Road, Timestamp,
-};
+use crate::{Limit, Mile, Road, Timestamp};
 use itertools::Itertools;
+use speedd_codecs::{camera::Camera, plate::PlateRecord, server::TicketRecord};
 use std::collections::{BTreeMap, HashMap};
 use tokio::sync::mpsc;
 

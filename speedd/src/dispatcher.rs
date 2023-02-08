@@ -1,9 +1,10 @@
 use crate::{
-    client, heartbeat,
+    heartbeat,
     server::{self, TicketRecord},
     Road,
 };
 use futures::{Sink, SinkExt, Stream, StreamExt};
+use speedd_codecs::client;
 use tokio::sync::mpsc;
 
 #[derive(Debug)]
@@ -36,14 +37,15 @@ impl Dispatcher {
     {
         loop {
             tokio::select! {
+                Some(Ok(msg)) = reader.next() => {
+                    println!("Received dispatcher message {msg:?}");
+                    Self::handle_client_message(msg, &mut writer, &mut heartbeat_sender).await?;
+                }
                 Some(msg) = self.receiver.recv() => {
                     writer.send(server::Message::Ticket(msg)).await?;
                 }
                 Some(()) = heartbeat_receiver.recv() => {
                     writer.send(server::Message::Heartbeat).await?;
-                }
-                Some(Ok(msg)) = reader.next() => {
-                    Self::handle_client_message(msg, &mut writer, &mut heartbeat_sender).await?;
                 }
             }
         }
@@ -69,7 +71,6 @@ impl Dispatcher {
                 if let Some(heartbeat_sender) = heartbeat_sender.take() {
                     println!("Spawning a new heartbeat");
                     tokio::spawn(heartbeat::heartbeat(dur, heartbeat_sender));
-                    writer.send(server::Message::Heartbeat).await?;
                 } else {
                     println!("Ignoring repeated heartbeat request");
                     writer

@@ -4,8 +4,12 @@ use tokio::sync::mpsc;
 pub async fn heartbeat(dur: Duration, sender: mpsc::Sender<()>) -> anyhow::Result<()> {
     let mut interval = tokio::time::interval(dur);
     loop {
-        // Terminate if receivers dropped
-        sender.send(()).await?;
         interval.tick().await;
+        println!("Sending heartbeat");
+        if sender.send(()).await.is_err() {
+            println!("Dropping heartbeat");
+            break;
+        }
     }
+    Ok(())
 }

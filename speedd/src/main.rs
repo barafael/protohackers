@@ -1,12 +1,15 @@
 #![feature(iter_array_chunks)]
 
-use crate::camera::Camera;
+use crate::camera::CameraClient;
 use crate::client::{client_action, Action};
 use crate::dispatcher::Dispatcher;
-use camera::PlateRecord;
 use collector::Collector;
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use server::TicketRecord;
+use speedd_codecs::camera::Camera;
+use speedd_codecs::client::decoder::MessageDecoder;
+use speedd_codecs::client::Message as ClientMessage;
+use speedd_codecs::plate::PlateRecord;
+use speedd_codecs::server::{self, TicketRecord};
 use std::env;
 use tokio::{net::TcpListener, sync::mpsc};
 use tokio_util::codec::{FramedRead, FramedWrite};
@@ -16,7 +19,6 @@ mod client;
 mod collector;
 mod dispatcher;
 mod heartbeat;
-mod server;
 
 pub type Timestamp = u32;
 pub type Mile = u16;
@@ -39,15 +41,13 @@ async fn main() -> anyhow::Result<()> {
     while let Ok((inbound, addr)) = listener.accept().await {
         println!("Accepted connection from {addr}");
         let (reader, writer) = inbound.into_split();
-        let reader = FramedRead::new(reader, client::decoder::MessageDecoder::default());
+        let reader = FramedRead::new(reader, MessageDecoder::default());
         let writer = FramedWrite::new(writer, server::encoder::MessageEncoder::default());
         let plate_tx = plate_tx.clone();
         let dispatcher_tx = dispatcher_tx.clone();
-        tokio::spawn(async move {
-            handle_connection(reader, writer, plate_tx, dispatcher_tx)
-                .await
-                .unwrap();
-        });
+        tokio::spawn(
+            async move { handle_connection(reader, writer, plate_tx, dispatcher_tx).await },
+        );
     }
 
     Ok(())
@@ -60,8 +60,8 @@ async fn handle_connection<R, W>(
     dispatcher_tx: mpsc::Sender<(Road, mpsc::Sender<TicketRecord>)>,
 ) -> anyhow::Result<()>
 where
-    R: Stream<Item = Result<client::Message, anyhow::Error>> + Unpin,
-    W: Sink<server::Message, Error = anyhow::Error> + Unpin,
+    R: Stream<Item = Result<ClientMessage, anyhow::Error>> + Send + Unpin,
+    W: Sink<server::Message, Error = anyhow::Error> + Send + Unpin,
 {
     let (heartbeat_sender, mut heartbeat_receiver) = mpsc::channel(16);
     let mut heartbeat_sender = Some(heartbeat_sender);
@@ -71,6 +71,7 @@ where
             Some(Ok(msg)) = reader.next() => {
                 let action = client_action(msg, &mut heartbeat_sender);
                 match action {
+                    Action::None => {},
                     Action::Reply(r) => writer.send(r).await?,
                     Action::SpawnCamera(c) => {
                         Camera::run(c, reader, writer, plate_tx, heartbeat_sender, heartbeat_receiver).await?;
@@ -93,8 +94,13 @@ where
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::camera::Camera;
+    use futures::StreamExt;
+    use speedd_codecs::{
+        camera::Camera,
+        client,
+        plate::PlateRecord,
+        server::{Message as ServerMessage, TicketRecord},
+    };
     use tokio_test::io::Builder;
 
     #[tokio::test]
@@ -154,7 +160,7 @@ mod test {
     #[tokio::test]
     async fn example_2() {
         let dispatcher_message = client::Message::IAmDispatcher(vec![123]);
-        let ticket = server::Message::Ticket(TicketRecord {
+        let ticket = ServerMessage::Ticket(TicketRecord {
             plate: "UN1X".to_string(),
             road: 123,
             mile1: 8,

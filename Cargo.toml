@@ -8,5 +8,7 @@ members = [
     "unusual_db",
     "mob_in_the_middle",
     "netcrab",
+    "speedd_clients",
+    "speedd_codecs",
     "speedd",
 ]

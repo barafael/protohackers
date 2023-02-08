@@ -1,8 +1,7 @@
+use super::TicketRecord;
 use anyhow::Ok;
 use bytes::Buf;
 use tokio_util::codec::Decoder;
-
-use super::TicketRecord;
 
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
 pub struct MessageDecoder;
@@ -50,7 +49,10 @@ impl Decoder for MessageDecoder {
                         speed,
                     })))
                 }
-                0x41 => Ok(Some(super::Message::Heartbeat)),
+                0x41 => {
+                    src.advance(1);
+                    Ok(Some(super::Message::Heartbeat))
+                }
                 n => anyhow::bail!("Invalid opcode {n}"),
             }
         } else {
@@ -63,9 +65,8 @@ impl Decoder for MessageDecoder {
 
 #[cfg(test)]
 mod test {
-    use bytes::BytesMut;
-
     use super::*;
+    use bytes::BytesMut;
 
     #[test]
     fn decodes_example() {

@@ -1,23 +1,10 @@
-use crate::{
-    camera::{Camera, PlateRecord},
-    heartbeat, server,
-};
-use std::time::Duration;
+use crate::{heartbeat, server};
+use speedd_codecs::{camera::Camera, client::Message};
 use tokio::sync::mpsc;
-
-pub mod decoder;
-pub mod encoder;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Message {
-    Plate(PlateRecord),
-    WantHeartbeat(Duration),
-    IAmCamera(Camera),
-    IAmDispatcher(Vec<u16>),
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
+    None,
     Reply(server::Message),
     SpawnCamera(Camera),
     SpawnDispatcher(Vec<u16>),
@@ -33,7 +20,7 @@ pub fn client_action(msg: Message, heartbeat_sender: &mut Option<mpsc::Sender<()
             if let Some(heartbeat_sender) = heartbeat_sender.take() {
                 println!("Spawning a new heartbeat");
                 tokio::spawn(heartbeat::heartbeat(dur, heartbeat_sender));
-                Action::Reply(server::Message::Heartbeat)
+                Action::None
             } else {
                 println!("Ignoring repeated heartbeat request");
                 Action::Reply(server::Message::Error(

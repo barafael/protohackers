@@ -1,5 +1,5 @@
 use super::Message;
-use crate::camera::{Camera, PlateRecord};
+use crate::{camera::Camera, plate::PlateRecord};
 use bytes::BufMut;
 use tokio_util::codec::Encoder;
 
