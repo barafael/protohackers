@@ -32,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
     let (plate_tx, plate_rx) = mpsc::channel(256);
     let (dispatcher_tx, dispatcher_rx) = mpsc::channel(16);
 
-    tokio::spawn(Collector::new(plate_rx).run(dispatcher_rx));
+    tokio::spawn(Collector::new().run(plate_rx, dispatcher_rx));
 
     while let Ok((inbound, addr)) = listener.accept().await {
         println!("Accepted connection from {addr}");

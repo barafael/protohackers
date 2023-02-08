@@ -43,6 +43,7 @@ impl Dispatcher {
                     Self::handle_client_message(msg, &mut writer, &mut heartbeat_sender).await?;
                 }
                 Some(msg) = self.tickets.recv() => {
+                    println!("Received ticket {msg:?}");
                     writer.send(server::Message::Ticket(msg)).await?;
                 }
                 Some(()) = heartbeats.recv() => {
