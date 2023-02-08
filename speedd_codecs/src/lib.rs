@@ -12,23 +12,20 @@ pub type Limit = u16;
 
 #[cfg(test)]
 mod test {
+    use crate::server::Message as ServerMessage;
+    use crate::{camera::Camera, plate::PlateRecord, server::TicketRecord};
     use futures::StreamExt;
-    use speedd_codecs::{
-        camera::Camera,
-        plate::PlateRecord,
-        server::{Message as ServerMessage, TicketRecord},
-    };
     use tokio_test::io::Builder;
 
     #[tokio::test]
-    async fn example() {
+    async fn codec_example() {
         let client_1 = Builder::new()
             .read(&[0x80, 0x00, 0x7b, 0x00, 0x08, 0x00, 0x3c])
             .read(&[0x20, 0x04, 0x55, 0x4e, 0x31, 0x58, 0x00, 0x00, 0x00, 0x00])
             .build();
         let mut client_1 = tokio_util::codec::FramedRead::new(
             client_1,
-            client::decoder::MessageDecoder::default(),
+            crate::client::decoder::MessageDecoder::default(),
         );
 
         let client_2 = Builder::new()
@@ -37,12 +34,12 @@ mod test {
             .build();
         let mut client_2 = tokio_util::codec::FramedRead::new(
             client_2,
-            client::decoder::MessageDecoder::default(),
+            crate::client::decoder::MessageDecoder::default(),
         );
 
         assert_eq!(
             client_1.next().await.unwrap().unwrap(),
-            client::Message::IAmCamera(Camera {
+            crate::client::Message::IAmCamera(Camera {
                 road: 123,
                 mile: 8,
                 limit: 60,
@@ -50,14 +47,14 @@ mod test {
         );
         assert_eq!(
             client_1.next().await.unwrap().unwrap(),
-            client::Message::Plate(PlateRecord {
+            crate::client::Message::Plate(PlateRecord {
                 plate: "UN1X".to_string(),
                 timestamp: 0,
             })
         );
         assert_eq!(
             client_2.next().await.unwrap().unwrap(),
-            client::Message::IAmCamera(Camera {
+            crate::client::Message::IAmCamera(Camera {
                 road: 123,
                 mile: 9,
                 limit: 60,
@@ -65,7 +62,7 @@ mod test {
         );
         assert_eq!(
             client_2.next().await.unwrap().unwrap(),
-            client::Message::Plate(PlateRecord {
+            crate::client::Message::Plate(PlateRecord {
                 plate: "UN1X".to_string(),
                 timestamp: 45,
             })
@@ -76,7 +73,7 @@ mod test {
     #[allow(unused)]
     #[tokio::test]
     async fn example_2() {
-        let dispatcher_message = client::Message::IAmDispatcher(vec![123]);
+        let dispatcher_message = crate::client::Message::IAmDispatcher(vec![123]);
         let ticket = ServerMessage::Ticket(TicketRecord {
             plate: "UN1X".to_string(),
             road: 123,
