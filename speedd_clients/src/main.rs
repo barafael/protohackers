@@ -1,4 +1,4 @@
-use args::{Arguments, Mode};
+use arguments::{Arguments, Mode};
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use rustyline::error::ReadlineError;
@@ -11,7 +11,7 @@ use speedd_codecs::{
 use tokio::net::TcpStream;
 use tokio_util::codec::{FramedRead, FramedWrite};
 
-mod args;
+mod arguments;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
