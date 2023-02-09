@@ -15,25 +15,25 @@ pub struct Collector {
 impl Collector {
     pub fn new() -> Self {
         Self {
-            dispatchers: HashMap::default(),
             records: HashMap::default(),
             limits: HashMap::default(),
+            dispatchers: HashMap::default(),
         }
     }
 
     pub async fn run(
         mut self,
-        mut receiver: mpsc::Receiver<(PlateRecord, Camera)>,
-        mut subscription: mpsc::Receiver<(Road, mpsc::Sender<TicketRecord>)>,
+        mut reporting: mpsc::Receiver<(PlateRecord, Camera)>,
+        mut dispatcher_subscription: mpsc::Receiver<(Road, mpsc::Sender<TicketRecord>)>,
     ) -> anyhow::Result<()> {
         println!("Starting Collector loop");
         loop {
             tokio::select! {
-                Some((record, camera)) = receiver.recv() => {
+                Some((record, camera)) = reporting.recv() => {
                     println!("{camera:?} reports {record:?}");
                     self.handle_plate(record, camera).await?;
                 }
-                Some((road, sender)) = subscription.recv() => {
+                Some((road, sender)) = dispatcher_subscription.recv() => {
                     println!("Received subscription for road {road}");
                     self.handle_subscription(road, sender).await?;
                 }

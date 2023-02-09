@@ -29,21 +29,21 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = TcpListener::bind(listen_addr).await?;
 
-    let (plate_tx, plate_rx) = mpsc::channel(256);
-    let (dispatcher_tx, dispatcher_rx) = mpsc::channel(16);
+    let (reporting_tx, reporting_rx) = mpsc::channel(256);
+    let (dispatcher_subscription_tx, dispatcher_subscription_rx) = mpsc::channel(16);
 
-    tokio::spawn(Collector::new().run(plate_rx, dispatcher_rx));
+    tokio::spawn(Collector::new().run(reporting_rx, dispatcher_subscription_rx));
 
     while let Ok((inbound, addr)) = listener.accept().await {
         println!("Accepted connection from {addr}");
         let (reader, writer) = inbound.into_split();
         let reader = FramedRead::new(reader, MessageDecoder::default());
         let writer = FramedWrite::new(writer, server::encoder::MessageEncoder::default());
-        let plate_tx = plate_tx.clone();
-        let dispatcher_tx = dispatcher_tx.clone();
-        tokio::spawn(
-            async move { handle_connection(reader, writer, plate_tx, dispatcher_tx).await },
-        );
+        let reporting_tx = reporting_tx.clone();
+        let dispatcher_tx = dispatcher_subscription_tx.clone();
+        tokio::spawn(async move {
+            handle_connection(reader, writer, reporting_tx, dispatcher_tx).await
+        });
     }
 
     Ok(())
