@@ -128,7 +128,7 @@ impl CopyBuffer {
         W: AsyncWrite + ?Sized,
     {
         let me = &mut *self;
-        println!(
+        tracing::info!(
             "buffer contents to write: {:?}",
             String::from_utf8(me.buf[me.pos..me.cap].to_vec())
         );
