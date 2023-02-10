@@ -5,9 +5,9 @@ pub async fn heartbeat(dur: Duration, sender: mpsc::Sender<()>) -> anyhow::Resul
     let mut interval = tokio::time::interval(dur);
     loop {
         interval.tick().await;
-        println!("Sending heartbeat");
+        tracing::trace!("Sending heartbeat");
         if sender.send(()).await.is_err() {
-            println!("Dropping heartbeat");
+            tracing::info!("Dropping heartbeat");
             break;
         }
     }

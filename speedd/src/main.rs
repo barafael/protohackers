@@ -3,6 +3,7 @@
 use crate::camera::CameraClient;
 use crate::client::{client_action, Action};
 use crate::dispatcher::Dispatcher;
+use async_channel as mpmc;
 use collector::Collector;
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use speedd_codecs::camera::Camera;
@@ -12,8 +13,11 @@ use speedd_codecs::plate::PlateRecord;
 use speedd_codecs::server::{self, TicketRecord};
 use speedd_codecs::Road;
 use std::env;
+use tokio::sync::oneshot;
 use tokio::{net::TcpListener, sync::mpsc};
 use tokio_util::codec::{FramedRead, FramedWrite};
+use tracing::Level;
+use tracing_subscriber::FmtSubscriber;
 
 mod camera;
 mod client;
@@ -23,6 +27,13 @@ mod heartbeat;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(Level::DEBUG)
+        .with_ansi(false)
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+
     let listen_addr = env::args()
         .nth(1)
         .unwrap_or_else(|| "0.0.0.0:8000".to_string());
@@ -35,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(Collector::new().run(reporting_rx, dispatcher_subscription_rx));
 
     while let Ok((inbound, addr)) = listener.accept().await {
-        println!("Accepted connection from {addr}");
+        tracing::info!("Accepted connection from {addr}");
         let (reader, writer) = inbound.into_split();
         let reader = FramedRead::new(reader, MessageDecoder::default());
         let writer = FramedWrite::new(writer, server::encoder::MessageEncoder::default());
@@ -53,7 +64,7 @@ async fn handle_connection<R, W>(
     mut reader: R,
     mut writer: W,
     plate_tx: mpsc::Sender<(PlateRecord, Camera)>,
-    dispatcher_tx: mpsc::Sender<(Road, mpsc::Sender<TicketRecord>)>,
+    dispatcher_tx: mpsc::Sender<(Road, oneshot::Sender<mpmc::Receiver<TicketRecord>>)>,
 ) -> anyhow::Result<()>
 where
     R: Stream<Item = Result<ClientMessage, anyhow::Error>> + Send + Unpin,
@@ -62,6 +73,7 @@ where
     let (heartbeat_sender, mut heartbeat_receiver) = mpsc::channel(16);
     let mut heartbeat_sender = Some(heartbeat_sender);
 
+    tracing::info!("Entering client connection loop");
     loop {
         tokio::select! {
             Some(Ok(msg)) = reader.next() => {
@@ -84,7 +96,9 @@ where
             Some(()) = heartbeat_receiver.recv() => {
                 writer.send(server::Message::Heartbeat).await?;
             }
+            else => break,
         }
     }
+    tracing::info!("Leaving client connection loop");
     Ok(())
 }

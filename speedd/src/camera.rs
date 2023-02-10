@@ -24,18 +24,21 @@ impl CameraClient {
         R: Stream<Item = Result<client::Message, anyhow::Error>> + Send + Unpin,
         W: Sink<server::Message, Error = anyhow::Error> + Send + Unpin,
     {
-        println!("Starting Camera Client loop");
+        tracing::info!("Starting Camera Client loop");
         loop {
             tokio::select! {
                 Some(Ok(msg)) = reader.next() => {
-                    println!("Received camera message {msg:?}");
+                    tracing::info!("Received camera message {msg:?}");
                     self.handle_client_message(msg, &mut writer, &plate_tx, &mut heartbeat_sender).await?;
                 }
                 Some(()) = heartbeat_receiver.recv() => {
                     writer.send(server::Message::Heartbeat).await?;
                 }
+                else => break,
             }
         }
+        tracing::info!("Leaving Camera Client loop");
+        Ok(())
     }
 
     async fn handle_client_message<W>(
@@ -53,11 +56,15 @@ impl CameraClient {
                 plate_tx.send((record, self.cam.clone())).await?;
             }
             client::Message::WantHeartbeat(dur) => {
-                if let Some(sender) = heartbeat_sender.take() {
-                    println!("Spawning a new heartbeat");
-                    tokio::spawn(heartbeat::heartbeat(dur, sender));
+                if let Some(heartbeat_sender) = heartbeat_sender.take() {
+                    if !dur.is_zero() {
+                        tracing::info!("Spawning a new heartbeat");
+                        tokio::spawn(heartbeat::heartbeat(dur, heartbeat_sender));
+                    } else {
+                        tracing::warn!("Ignoring zero-duration heartbeat");
+                    }
                 } else {
-                    println!("Ignoring repeated heartbeat request");
+                    tracing::info!("Ignoring repeated heartbeat request");
                     writer
                         .send(server::Message::Error(
                             "You already specified a heartbeat".to_string(),

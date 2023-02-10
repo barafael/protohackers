@@ -3,25 +3,31 @@ use crate::{
     server::{self, TicketRecord},
     Road,
 };
-use futures::{Sink, SinkExt, Stream, StreamExt};
+use async_channel as mpmc;
+use futures::{stream::SelectAll, Sink, SinkExt, Stream, StreamExt};
 use speedd_codecs::client;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug)]
 pub struct Dispatcher {
-    tickets: mpsc::Receiver<TicketRecord>,
+    tickets: SelectAll<mpmc::Receiver<TicketRecord>>,
 }
 
 impl Dispatcher {
     pub async fn new(
         roads: &[u16],
-        dispatchers: &mpsc::Sender<(Road, mpsc::Sender<TicketRecord>)>,
+        dispatchers: &mpsc::Sender<(Road, oneshot::Sender<mpmc::Receiver<TicketRecord>>)>,
     ) -> anyhow::Result<Self> {
-        let (ticket_tx, receiver) = mpsc::channel(32);
+        let mut handles = Vec::new();
         for road in roads {
-            dispatchers.send((*road, ticket_tx.clone())).await?;
+            let (tx, rx) = oneshot::channel();
+            dispatchers.send((*road, tx)).await?;
+            let receiver = rx.await?;
+            handles.push(receiver);
         }
-        Ok(Self { tickets: receiver })
+        // TODO try with just iterator, no vector
+        let tickets = futures::stream::select_all(handles.into_iter());
+        Ok(Self { tickets })
     }
 
     pub async fn run<R, W>(
@@ -35,15 +41,15 @@ impl Dispatcher {
         R: Stream<Item = Result<client::Message, anyhow::Error>> + Unpin,
         W: Sink<server::Message, Error = anyhow::Error> + Unpin,
     {
-        println!("Starting Dispatcher Client loop");
+        tracing::info!("Starting Dispatcher Client loop");
         loop {
             tokio::select! {
                 Some(Ok(msg)) = reader.next() => {
-                    println!("Received dispatcher message {msg:?}");
+                    tracing::info!("Received dispatcher message {msg:?}");
                     Self::handle_client_message(msg, &mut writer, &mut heartbeat_sender).await?;
                 }
-                Some(msg) = self.tickets.recv() => {
-                    println!("Received ticket {msg:?}");
+                Some(msg) = self.tickets.next() => {
+                    tracing::info!("Received ticket {msg:?}");
                     writer.send(server::Message::Ticket(msg)).await?;
                 }
                 Some(()) = heartbeats.recv() => {
@@ -71,10 +77,14 @@ impl Dispatcher {
             }
             client::Message::WantHeartbeat(dur) => {
                 if let Some(heartbeat_sender) = heartbeat_sender.take() {
-                    println!("Spawning a new heartbeat");
-                    tokio::spawn(heartbeat::heartbeat(dur, heartbeat_sender));
+                    if !dur.is_zero() {
+                        tracing::info!("Spawning a new heartbeat");
+                        tokio::spawn(heartbeat::heartbeat(dur, heartbeat_sender));
+                    } else {
+                        tracing::warn!("Ignoring zero-duration heartbeat");
+                    }
                 } else {
-                    println!("Ignoring repeated heartbeat request");
+                    tracing::info!("Ignoring repeated heartbeat request");
                     writer
                         .send(server::Message::Error(
                             "You already specified a heartbeat".to_string(),

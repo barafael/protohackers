@@ -8,10 +8,12 @@ tokio-test = "0.4.2"
 
 [dependencies]
 anyhow = "1.0.68"
+async-channel = "1.8.0"
 bytes = "1.4.0"
 futures = "0.3.26"
 itertools = "0.10.5"
+speedd_codecs = { path = "../speedd_codecs" }
 tokio = { version = "1.25.0", features = ["full"] }
 tokio-util = { version = "0.7.4", features = ["codec"] }
-speedd_codecs = { path = "../speedd_codecs" }
-async-trait = "0.1.64"
+tracing = "0.1.37"
+tracing-subscriber = "0.3.16"

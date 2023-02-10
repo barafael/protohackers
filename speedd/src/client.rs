@@ -13,16 +13,20 @@ pub enum Action {
 pub fn client_action(msg: Message, heartbeat_sender: &mut Option<mpsc::Sender<()>>) -> Action {
     match msg {
         Message::Plate(record) => {
-            println!("Ignoring {record:?} due to client not having specialized as camera");
+            tracing::warn!("Ignoring {record:?} due to client not having specialized as camera");
             Action::Reply(server::Message::Error("You are no camera".to_string()))
         }
         Message::WantHeartbeat(dur) => {
             if let Some(heartbeat_sender) = heartbeat_sender.take() {
-                println!("Spawning a new heartbeat");
-                tokio::spawn(heartbeat::heartbeat(dur, heartbeat_sender));
+                if !dur.is_zero() {
+                    tracing::info!("Spawning a new heartbeat");
+                    tokio::spawn(heartbeat::heartbeat(dur, heartbeat_sender));
+                } else {
+                    tracing::warn!("Ignoring zero-duration heartbeat");
+                }
                 Action::None
             } else {
-                println!("Ignoring repeated heartbeat request");
+                tracing::warn!("Ignoring repeated heartbeat request");
                 Action::Reply(server::Message::Error(
                     "You already specified a heartbeat".to_string(),
                 ))

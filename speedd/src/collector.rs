@@ -1,21 +1,24 @@
+use async_channel as mpmc;
 use itertools::Itertools;
 use speedd_codecs::{
     camera::Camera, plate::PlateRecord, server::TicketRecord, Limit, Mile, Road, Timestamp,
 };
-use std::collections::{BTreeMap, HashMap};
-use tokio::sync::mpsc;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug)]
 pub struct Collector {
     records: HashMap<String, HashMap<Road, BTreeMap<Timestamp, Mile>>>,
+    ticketed_days: HashMap<String, HashSet<u32>>,
     limits: HashMap<Road, Limit>,
-    dispatchers: HashMap<Road, Vec<mpsc::Sender<TicketRecord>>>,
+    dispatchers: HashMap<Road, (mpmc::Sender<TicketRecord>, mpmc::Receiver<TicketRecord>)>,
 }
 
 impl Collector {
     pub fn new() -> Self {
         Self {
             records: HashMap::default(),
+            ticketed_days: HashMap::default(),
             limits: HashMap::default(),
             dispatchers: HashMap::default(),
         }
@@ -24,35 +27,40 @@ impl Collector {
     pub async fn run(
         mut self,
         mut reporting: mpsc::Receiver<(PlateRecord, Camera)>,
-        mut dispatcher_subscription: mpsc::Receiver<(Road, mpsc::Sender<TicketRecord>)>,
+        mut dispatcher_subscription: mpsc::Receiver<(
+            Road,
+            oneshot::Sender<mpmc::Receiver<TicketRecord>>,
+        )>,
     ) -> anyhow::Result<()> {
-        println!("Starting Collector loop");
+        tracing::info!("Starting Collector loop");
         loop {
             tokio::select! {
                 Some((record, camera)) = reporting.recv() => {
-                    println!("{camera:?} reports {record:?}");
-                    self.handle_plate(record, camera).await?;
+                    tracing::info!("{camera:?} reports {record:?}");
+                    self.insert_record(record, camera).await?;
                 }
                 Some((road, sender)) = dispatcher_subscription.recv() => {
-                    println!("Received subscription for road {road}");
-                    self.handle_subscription(road, sender).await?;
+                    tracing::info!("Received subscription for road {road}");
+                    let ticket_sender = self.insert_dispatcher(road).await?;
+                    let _x = sender.send(ticket_sender);
                 }
                 else => break
             }
             self.emit_tickets().await?;
-            dbg!(&self.records);
-            dbg!(&self.dispatchers.keys());
+            //dbg!(&self.records);
+            //dbg!(&self.dispatchers.keys());
+            //dbg!(&self.ticketed_days);
         }
-        println!("Ended Collector loop");
+        tracing::info!("Ended Collector loop");
         Ok(())
     }
 
-    pub async fn handle_plate(
+    pub async fn insert_record(
         &mut self,
         PlateRecord { plate, timestamp }: PlateRecord,
         Camera { road, mile, limit }: Camera,
     ) -> anyhow::Result<()> {
-        self.limits.insert(road, limit);
+        self.limits.insert(road, limit.saturating_mul(100));
         *self
             .records
             .entry(plate)
@@ -64,19 +72,20 @@ impl Collector {
         Ok(())
     }
 
-    pub async fn handle_subscription(
+    pub async fn insert_dispatcher(
         &mut self,
         road: u16,
-        sender: mpsc::Sender<TicketRecord>,
-    ) -> anyhow::Result<()> {
-        self.dispatchers.entry(road).or_default().push(sender);
-        Ok(())
+    ) -> anyhow::Result<mpmc::Receiver<TicketRecord>> {
+        // Create new channel for this road
+        let (_, receiver) = self.dispatchers.entry(road).or_insert(mpmc::bounded(1024));
+        Ok(receiver.clone())
     }
 
     async fn emit_tickets(&mut self) -> anyhow::Result<()> {
         let mut tickets = Vec::new();
         for (car, road_to_records) in &self.records {
             for (road, records) in road_to_records {
+                // Iterate over all records sorted by key (BTreeMap).
                 for ((ts1, mile1), (ts2, mile2)) in records.iter().tuple_windows() {
                     let delta_t = ts1.abs_diff(*ts2);
                     let delta_m = mile1.abs_diff(*mile2);
@@ -98,21 +107,20 @@ impl Collector {
                 }
             }
         }
-        for mut ticket in tickets {
-            println!("Violation found: {ticket:?}");
-            let mut sent = false;
-            if let Some(cbs) = self.dispatchers.get_mut(&ticket.road) {
-                for cb in cbs {
-                    if let Err(e) = cb.send(ticket.clone()).await {
-                        ticket = e.0;
-                    } else {
-                        println!("Dispatched ticket {ticket:?}");
-                        sent = true;
-                        break;
-                    }
+
+        for ticket in tickets {
+            tracing::info!("Violation found: {ticket:?}");
+            let mut already_ticketed_day = false;
+            for day in Self::days(ticket.timestamp1, ticket.timestamp2) {
+                let ticketed_days = self.ticketed_days.entry(ticket.plate.clone()).or_default();
+                if ticketed_days.contains(&day) {
+                    tracing::info!("Ignoring day {day}, already ticketed {}", ticket.plate);
+                    already_ticketed_day = true;
+                } else {
+                    ticketed_days.insert(day);
                 }
             }
-            if sent {
+            if already_ticketed_day {
                 self.records
                     .get_mut(&ticket.plate)
                     .unwrap()
@@ -125,9 +133,25 @@ impl Collector {
                     .get_mut(&ticket.road)
                     .unwrap()
                     .remove(&ticket.timestamp2);
+            } else {
+                // Enqueue ticket in channel without existing dispatcher
+                let (tx, _) = self
+                    .dispatchers
+                    .entry(ticket.road)
+                    .or_insert(mpmc::bounded(1024));
+                tx.send(ticket).await?;
             }
         }
+        tracing::info!("No more violations found");
         Ok(())
+    }
+
+    fn days(timestamp1: u32, timestamp2: u32) -> impl Iterator<Item = u32> {
+        (timestamp1..timestamp2).map(Self::day).unique()
+    }
+
+    fn day(timestamp: u32) -> u32 {
+        f32::floor(timestamp as f32 / 86400f32) as u32
     }
 }
 
@@ -181,13 +205,15 @@ mod test {
             .await
             .unwrap();
         let (disp_tx, disp_rx) = mpsc::channel(1);
-        let (ticket_tx, mut ticket_rx) = mpsc::channel(1);
-        disp_tx.send((12, ticket_tx)).await.unwrap();
+
+        let (tx, rx) = oneshot::channel();
+        disp_tx.send((12, tx)).await.unwrap();
         drop(disp_tx);
         drop(sender);
+
         let col = Collector::new();
-        println!("running");
         col.run(receiver, disp_rx).await.unwrap();
+        let ticket_rx = rx.await.unwrap();
         let val = ticket_rx.recv().await.unwrap();
         dbg!(val);
     }
