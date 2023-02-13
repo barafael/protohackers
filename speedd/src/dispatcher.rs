@@ -38,15 +38,15 @@ impl Dispatcher {
         mut heartbeats: mpsc::Receiver<()>,
     ) -> anyhow::Result<()>
     where
-        R: Stream<Item = Result<client::Message, anyhow::Error>> + Unpin,
-        W: Sink<server::Message, Error = anyhow::Error> + Unpin,
+        R: Stream<Item = Result<client::Message, anyhow::Error>> + Send + Unpin,
+        W: Sink<server::Message, Error = anyhow::Error> + Send + Unpin,
     {
         tracing::info!("Starting Dispatcher Client loop");
         loop {
             tokio::select! {
                 Some(Ok(msg)) = reader.next() => {
                     tracing::info!("Received dispatcher message {msg:?}");
-                    Self::handle_client_message(msg, &mut writer, &mut heartbeat_sender).await?;
+                    self.handle_client_message(msg, &mut writer, &mut heartbeat_sender).await?;
                 }
                 Some(msg) = self.tickets.next() => {
                     tracing::info!("Received ticket {msg:?}");
@@ -55,11 +55,15 @@ impl Dispatcher {
                 Some(()) = heartbeats.recv() => {
                     writer.send(server::Message::Heartbeat).await?;
                 }
+                else => break
             }
         }
+        tracing::info!("Leaving Dispatcher Client loop");
+        Ok(())
     }
 
     async fn handle_client_message<W>(
+        &self,
         msg: client::Message,
         writer: &mut W,
         heartbeat_sender: &mut Option<mpsc::Sender<()>>,

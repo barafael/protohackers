@@ -28,7 +28,7 @@ impl CameraClient {
         loop {
             tokio::select! {
                 Some(Ok(msg)) = reader.next() => {
-                    tracing::info!("Received camera message {msg:?}");
+                    tracing::trace!("Received camera message {msg:?}");
                     self.handle_client_message(msg, &mut writer, &plate_tx, &mut heartbeat_sender).await?;
                 }
                 Some(()) = heartbeat_receiver.recv() => {
@@ -73,6 +73,7 @@ impl CameraClient {
                 }
             }
             client::Message::IAmCamera { .. } => {
+                tracing::warn!("Ignoring repeated IAmCamera");
                 writer
                     .send(server::Message::Error(
                         "Yes, you are (a camera)".to_string(),

@@ -67,19 +67,24 @@ impl Collector {
     async fn dispatch_tickets(&mut self, tickets: &[TicketRecord]) -> anyhow::Result<()> {
         for ticket in tickets {
             tracing::info!("Violation found: {ticket:?}");
+            let ticketed_days = self.ticketed_days.entry(ticket.plate.clone()).or_default();
+            let mut send = false;
             for day in Self::days(ticket.timestamp1, ticket.timestamp2) {
-                let ticketed_days = self.ticketed_days.entry(ticket.plate.clone()).or_default();
                 if ticketed_days.contains(&day) {
                     tracing::info!("Ignoring day {day}, already ticketed {}", ticket.plate);
                 } else {
-                    // Enqueue ticket in channel without existing dispatcher
-                    let (tx, _) = self
-                        .dispatchers
-                        .entry(ticket.road)
-                        .or_insert(mpmc::bounded(1024));
-                    tx.send(ticket.clone()).await?;
+                    send = true;
+                    tracing::trace!("Ticketing day {day}");
                     ticketed_days.insert(day);
                 }
+            }
+            if send {
+                tracing::info!("Sending it");
+                let (tx, _) = self
+                    .dispatchers
+                    .entry(ticket.road)
+                    .or_insert(mpmc::bounded(1024));
+                tx.send(ticket.clone()).await?;
             }
         }
         Ok(())

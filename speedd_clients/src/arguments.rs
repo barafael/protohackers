@@ -23,6 +23,7 @@ pub struct Arguments {
 
 #[derive(Debug, Subcommand)]
 pub enum Mode {
+    Client,
     Dispatcher {
         #[arg(value_delimiter = ' ', value_parser = parse_hex_digit)]
         roads: Vec<u16>,
