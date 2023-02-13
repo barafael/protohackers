@@ -37,7 +37,8 @@ impl Collector {
             tokio::select! {
                 Some((record, camera)) = reporting.recv() => {
                     tracing::info!("{camera:?} reports {record:?}");
-                    self.insert_record(record, camera).await?;
+                    let tickets = self.insert_record(record, camera).await?;
+                    self.dispatch_tickets(&tickets).await?;
                 }
                 Some((road, sender)) = dispatcher_subscription.recv() => {
                     tracing::info!("Received subscription for road {road}");
@@ -46,29 +47,11 @@ impl Collector {
                 }
                 else => break
             }
-            self.emit_tickets().await?;
             //dbg!(&self.records);
             //dbg!(&self.dispatchers.keys());
             //dbg!(&self.ticketed_days);
         }
         tracing::info!("Ended Collector loop");
-        Ok(())
-    }
-
-    pub async fn insert_record(
-        &mut self,
-        PlateRecord { plate, timestamp }: PlateRecord,
-        Camera { road, mile, limit }: Camera,
-    ) -> anyhow::Result<()> {
-        self.limits.insert(road, limit.saturating_mul(100));
-        *self
-            .records
-            .entry(plate)
-            .or_default()
-            .entry(road)
-            .or_default()
-            .entry(timestamp)
-            .or_default() = mile;
         Ok(())
     }
 
@@ -81,69 +64,94 @@ impl Collector {
         Ok(receiver.clone())
     }
 
-    async fn emit_tickets(&mut self) -> anyhow::Result<()> {
-        let mut tickets = Vec::new();
-        for (car, road_to_records) in &self.records {
-            for (road, records) in road_to_records {
-                // Iterate over all records sorted by key (BTreeMap).
-                for ((ts1, mile1), (ts2, mile2)) in records.iter().tuple_windows() {
-                    let delta_t = ts1.abs_diff(*ts2);
-                    let delta_m = mile1.abs_diff(*mile2);
-                    let speed = (delta_m as f32 / delta_t as f32) * 60.0 * 60.0;
-                    let speed = speed.round() as u16;
-                    let speed = speed.saturating_mul(100);
-                    if &speed > self.limits.get(road).unwrap() {
-                        let ticket = TicketRecord {
-                            plate: car.clone(),
-                            road: *road,
-                            mile1: *mile1,
-                            timestamp1: *ts1,
-                            mile2: *mile2,
-                            timestamp2: *ts2,
-                            speed,
-                        };
-                        tickets.push(ticket);
-                    }
-                }
-            }
-        }
-
+    async fn dispatch_tickets(&mut self, tickets: &[TicketRecord]) -> anyhow::Result<()> {
         for ticket in tickets {
             tracing::info!("Violation found: {ticket:?}");
-            let mut already_ticketed_day = false;
             for day in Self::days(ticket.timestamp1, ticket.timestamp2) {
                 let ticketed_days = self.ticketed_days.entry(ticket.plate.clone()).or_default();
                 if ticketed_days.contains(&day) {
                     tracing::info!("Ignoring day {day}, already ticketed {}", ticket.plate);
-                    already_ticketed_day = true;
                 } else {
+                    // Enqueue ticket in channel without existing dispatcher
+                    let (tx, _) = self
+                        .dispatchers
+                        .entry(ticket.road)
+                        .or_insert(mpmc::bounded(1024));
+                    tx.send(ticket.clone()).await?;
                     ticketed_days.insert(day);
                 }
             }
-            if already_ticketed_day {
-                self.records
-                    .get_mut(&ticket.plate)
-                    .unwrap()
-                    .get_mut(&ticket.road)
-                    .unwrap()
-                    .remove(&ticket.timestamp1);
-                self.records
-                    .get_mut(&ticket.plate)
-                    .unwrap()
-                    .get_mut(&ticket.road)
-                    .unwrap()
-                    .remove(&ticket.timestamp2);
-            } else {
-                // Enqueue ticket in channel without existing dispatcher
-                let (tx, _) = self
-                    .dispatchers
-                    .entry(ticket.road)
-                    .or_insert(mpmc::bounded(1024));
-                tx.send(ticket).await?;
+        }
+        Ok(())
+    }
+
+    async fn insert_record(
+        &mut self,
+        PlateRecord { plate, timestamp }: PlateRecord,
+        Camera { road, mile, limit }: Camera,
+    ) -> anyhow::Result<Vec<TicketRecord>> {
+        let limit = limit.saturating_mul(100);
+        self.limits.insert(road, limit);
+
+        let map = self
+            .records
+            .entry(plate.to_string())
+            .or_default()
+            .entry(road)
+            .or_default();
+
+        let prev = map
+            .range(..timestamp)
+            .next_back()
+            .map(|(ts, mile)| (*ts, *mile));
+        let next = map.range(timestamp..).next().map(|(ts, mile)| (*ts, *mile));
+
+        *map.entry(timestamp).or_default() = mile;
+
+        let mut tickets: Vec<TicketRecord> = Vec::new();
+
+        if let Some((earlier, previous_mile)) = prev {
+            if let Some(speed) = Self::is_violation(limit, earlier, timestamp, previous_mile, mile)
+            {
+                tickets.push(TicketRecord {
+                    plate: plate.clone(),
+                    road,
+                    mile1: previous_mile,
+                    timestamp1: earlier,
+                    mile2: mile,
+                    timestamp2: timestamp,
+                    speed,
+                })
             }
         }
-        tracing::info!("No more violations found");
-        Ok(())
+        if let Some((later, next_mile)) = next {
+            if let Some(speed) = Self::is_violation(limit, timestamp, later, mile, next_mile) {
+                tickets.push(TicketRecord {
+                    plate,
+                    road,
+                    mile1: mile,
+                    timestamp1: timestamp,
+                    mile2: next_mile,
+                    timestamp2: later,
+                    speed,
+                })
+            }
+        }
+
+        Ok(tickets)
+    }
+
+    fn is_violation(limit: u16, ts1: u32, ts2: u32, mile1: u16, mile2: u16) -> Option<u16> {
+        let delta_t = ts1.abs_diff(ts2);
+        let delta_m = mile1.abs_diff(mile2);
+        let speed = (delta_m as f32 / delta_t as f32) * 60.0 * 60.0;
+        let speed = speed.round() as u16;
+        let speed = speed.saturating_mul(100);
+        if speed > limit {
+            Some(speed)
+        } else {
+            None
+        }
     }
 
     fn days(timestamp1: u32, timestamp2: u32) -> impl Iterator<Item = u32> {
