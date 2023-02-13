@@ -18,10 +18,11 @@ impl Decoder for MessageDecoder {
                     let Some(len) = src.get(1) else {
                         return Ok(None);
                     };
-                    if src.remaining() <= 1 + 1 + *len as usize {
+                    if src.remaining() < 1 + 1 + *len as usize {
                         return Ok(None);
                     }
                     let bytes = String::from_utf8((src[2..2 + *len as usize]).to_vec())?;
+                    src.advance(1 + 1 + bytes.len());
                     Ok(Some(super::Message::Error(bytes)))
                 }
                 0x21 => {

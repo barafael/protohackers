@@ -73,7 +73,7 @@ impl Decoder for MessageDecoder {
                         .take(*len as usize)
                         .map(u16::from_be_bytes)
                         .collect_vec();
-                    src.advance(1 + 1 + *len as usize);
+                    src.advance(1 + 1 + *len as usize * 2);
                     Ok(Some(Self::Item::IAmDispatcher(bytes)))
                 }
                 n => anyhow::bail!("Invalid opcode 0x{n:x}"),
