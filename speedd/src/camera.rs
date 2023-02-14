@@ -27,9 +27,14 @@ impl CameraClient {
         tracing::info!("Starting Camera Client loop");
         loop {
             tokio::select! {
-                Some(Ok(msg)) = reader.next() => {
-                    tracing::trace!("Received camera message {msg:?}");
-                    self.handle_client_message(msg, &mut writer, &plate_tx, &mut heartbeat_sender).await?;
+                Some(msg) = reader.next() => {
+                    match msg {
+                        Ok(msg) => {
+                            tracing::trace!("Received camera message {msg:?}");
+                            self.handle_client_message(msg, &mut writer, &plate_tx, &mut heartbeat_sender).await?;
+                        }
+                        Err(e) => writer.send(server::Message::Error(format!("Nahh... you're just a camera. {e:?}"))).await?,
+                    }
                 }
                 Some(()) = heartbeat_receiver.recv() => {
                     writer.send(server::Message::Heartbeat).await?;

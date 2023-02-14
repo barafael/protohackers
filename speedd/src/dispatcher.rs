@@ -44,9 +44,14 @@ impl Dispatcher {
         tracing::info!("Starting Dispatcher Client loop");
         loop {
             tokio::select! {
-                Some(Ok(msg)) = reader.next() => {
-                    tracing::info!("Received dispatcher message {msg:?}");
-                    self.handle_client_message(msg, &mut writer, &mut heartbeat_sender).await?;
+                Some(msg) = reader.next() => {
+                    match msg {
+                        Ok(msg) => {
+                            tracing::info!("Received dispatcher message {msg:?}");
+                            self.handle_client_message(msg, &mut writer, &mut heartbeat_sender).await?;
+                        }
+                        Err(e) => writer.send(server::Message::Error(format!("Nahh... you're just a dispatcher. {e:?}"))).await?,
+                    }
                 }
                 Some(msg) = self.tickets.next() => {
                     tracing::info!("Received ticket {msg:?}");

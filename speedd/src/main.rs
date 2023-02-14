@@ -76,21 +76,26 @@ where
     tracing::info!("Entering client connection loop");
     loop {
         tokio::select! {
-            Some(Ok(msg)) = reader.next() => {
-                let action = client_action(msg, &mut heartbeat_sender);
-                match action {
-                    Action::None => {},
-                    Action::Reply(r) => writer.send(r).await?,
-                    Action::SpawnCamera(c) => {
-                        let client = CameraClient::new(c);
-                        CameraClient::run(client, reader, writer, plate_tx, heartbeat_sender, heartbeat_receiver).await?;
-                        break;
+            Some(msg) = reader.next() => {
+                match msg {
+                    Ok(msg) => {
+                        let action = client_action(msg, &mut heartbeat_sender);
+                        match action {
+                            Action::None => {},
+                            Action::Reply(r) => writer.send(r).await?,
+                            Action::SpawnCamera(c) => {
+                                let client = CameraClient::new(c);
+                                CameraClient::run(client, reader, writer, plate_tx, heartbeat_sender, heartbeat_receiver).await?;
+                                break;
+                            }
+                            Action::SpawnDispatcher(r) => {
+                                let dispatcher = Dispatcher::new(&r, &dispatcher_tx).await?;
+                                Dispatcher::run(dispatcher, reader, writer, heartbeat_sender, heartbeat_receiver).await?;
+                                break;
+                            }
+                        }
                     }
-                    Action::SpawnDispatcher(r) => {
-                        let dispatcher = Dispatcher::new(&r, &dispatcher_tx).await?;
-                        Dispatcher::run(dispatcher, reader, writer, heartbeat_sender, heartbeat_receiver).await?;
-                        break;
-                    }
+                    Err(e) => writer.send(server::Message::Error(format!("... who even are you? {e:?}"))).await?,
                 }
             }
             Some(()) = heartbeat_receiver.recv() => {
