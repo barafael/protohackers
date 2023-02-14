@@ -83,9 +83,6 @@ async fn main() -> anyhow::Result<()> {
         }
         Mode::Dispatcher { roads } => {
             println!("Registering as dispatcher");
-            writer
-                .send(client::Message::IAmDispatcher(roads.clone()))
-                .await?;
             writer.send(client::Message::IAmDispatcher(roads)).await?;
 
             println!("Start listening loop");

@@ -10,6 +10,9 @@ pub type Mile = u16;
 pub type Road = u16;
 pub type Limit = u16;
 
+pub const SECONDS_PER_DAY: u32 = 86400;
+//pub const SECONDS_PER_DAY: u32 = 1000;
+
 #[cfg(test)]
 mod test {
     use crate::server::Message as ServerMessage;

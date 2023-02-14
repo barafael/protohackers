@@ -2,6 +2,7 @@ use async_channel as mpmc;
 use itertools::Itertools;
 use speedd_codecs::{
     camera::Camera, plate::PlateRecord, server::TicketRecord, Limit, Mile, Road, Timestamp,
+    SECONDS_PER_DAY,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
@@ -68,23 +69,21 @@ impl Collector {
         for ticket in tickets {
             tracing::info!("Violation found: {ticket:?}");
             let ticketed_days = self.ticketed_days.entry(ticket.plate.clone()).or_default();
-            let mut send = false;
-            for day in Self::days(ticket.timestamp1, ticket.timestamp2) {
-                if ticketed_days.contains(&day) {
-                    tracing::info!("Ignoring day {day}, already ticketed {}", ticket.plate);
-                } else {
-                    send = true;
-                    tracing::trace!("Ticketing day {day}");
+            if Self::days(ticket.timestamp1, ticket.timestamp2)
+                .any(|day| ticketed_days.contains(&day))
+            {
+                let day = Self::day(ticket.timestamp1);
+                tracing::info!("Ignoring ticket starting on day {day}: {ticket:?}");
+            } else {
+                for day in Self::days(ticket.timestamp1, ticket.timestamp2) {
                     ticketed_days.insert(day);
                 }
-            }
-            if send {
-                tracing::info!("Sending it");
                 let (tx, _) = self
                     .dispatchers
                     .entry(ticket.road)
                     .or_insert(mpmc::bounded(1024));
                 tx.send(ticket.clone()).await?;
+                break;
             }
         }
         Ok(())
@@ -164,7 +163,7 @@ impl Collector {
     }
 
     fn day(timestamp: u32) -> u32 {
-        f32::floor(timestamp as f32 / 86400f32) as u32
+        f32::floor(timestamp as f32 / SECONDS_PER_DAY as f32) as u32
     }
 }
 
