@@ -21,12 +21,8 @@ impl Decoder for MessageDecoder {
             let ch = src.get_u8();
             tracing::trace!("nom {}", ch as char);
             match self {
-                MessageDecoder::Forwarding => {
-                    if ch != b'7' {
-                        tracing::trace!("appending byte {}", ch as char);
-                        response.put_u8(ch);
-                        continue;
-                    } else {
+                Self::Forwarding => {
+                    if ch == b'7' {
                         tracing::trace!("found a seven, flushing");
                         let mut bytes = BytesMut::new();
                         bytes.put_u8(ch);
@@ -35,13 +31,16 @@ impl Decoder for MessageDecoder {
                         response.clear();
                         return result;
                     }
+                    tracing::trace!("appending byte {}", ch as char);
+                    response.put_u8(ch);
+                    continue;
                 }
-                MessageDecoder::Buffering(bytes) => match (ch, bytes.len()) {
+                Self::Buffering(bytes) => match (ch, bytes.len()) {
                     (b' ' | b'\n', 0..=25) => {
                         bytes.put_u8(ch);
                         tracing::trace!("too short {bytes:?}");
                         response = bytes.clone();
-                        *self = MessageDecoder::Forwarding;
+                        *self = Self::Forwarding;
                         continue;
                     }
                     (b' ' | b'\n', 26..) => {
@@ -49,7 +48,7 @@ impl Decoder for MessageDecoder {
                         *bytes = BytesMut::from_iter(bogus::TONYS_ADDRESS.as_bytes().iter());
                         bytes.put_u8(ch);
                         response = bytes.clone();
-                        *self = MessageDecoder::Forwarding;
+                        *self = Self::Forwarding;
                         continue;
                     }
                     (c, 0..=35) => {
@@ -60,19 +59,18 @@ impl Decoder for MessageDecoder {
                     (c, 36..) => {
                         bytes.put_u8(c);
                         response.put_slice(bytes);
-                        *self = MessageDecoder::Forwarding;
+                        *self = Self::Forwarding;
                         continue;
                     }
                     (c, l) => unreachable!("char: {} len: {l}", c as char),
                 },
             }
         }
-        if !response.is_empty() {
-            tracing::trace!("sending it");
-            Ok(Some(response.freeze()))
-        } else {
+        if response.is_empty() {
             tracing::trace!("sending nothing");
             Ok(None)
+        } else {
+            Ok(Some(response.freeze()))
         }
     }
 }

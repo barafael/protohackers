@@ -62,11 +62,11 @@ impl CameraClient {
             }
             client::Message::WantHeartbeat(dur) => {
                 if let Some(heartbeat_sender) = heartbeat_sender.take() {
-                    if !dur.is_zero() {
-                        tracing::info!("Spawning a new heartbeat");
-                        tokio::spawn(heartbeat::heartbeat(dur, heartbeat_sender));
-                    } else {
+                    if dur.is_zero() {
                         tracing::warn!("Ignoring zero-duration heartbeat");
+                    } else {
+                        tracing::info!("Spawning a new heartbeat");
+                        tokio::spawn(heartbeat::run(dur, heartbeat_sender));
                     }
                 } else {
                     tracing::info!("Ignoring repeated heartbeat request");

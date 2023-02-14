@@ -78,7 +78,7 @@ where
     loop {
         tokio::select! {
             msg = reader.next() => {
-                let flow = handle_client_message(&name, &addr, msg, &tx, &users).await?;
+                let flow = handle_client_message(&name, &addr, msg, &tx, &users)?;
                 if flow.is_break() {
                     break;
                 }
@@ -94,7 +94,7 @@ where
     Ok(())
 }
 
-async fn handle_client_message(
+fn handle_client_message(
     name: &str,
     addr: &SocketAddr,
     msg: Option<Result<String, LinesCodecError>>,

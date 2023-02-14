@@ -7,8 +7,6 @@ use tracing_subscriber::FmtSubscriber;
 
 mod bogus;
 mod message;
-#[allow(unused)]
-mod proxy;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

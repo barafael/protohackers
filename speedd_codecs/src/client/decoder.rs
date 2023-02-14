@@ -37,8 +37,9 @@ impl Decoder for MessageDecoder {
                     }
                 }
                 0x40 => {
+                    #[allow(clippy::int_plus_one)]
                     if src.remaining() >= 1 + 4 {
-                        let _ = src.get_u8();
+                        src.advance(1); // tag byte
                         let deciseconds = src.get_u32();
                         let millis = deciseconds * 100;
                         let dur = Duration::from_millis(millis as u64);
@@ -48,8 +49,9 @@ impl Decoder for MessageDecoder {
                     }
                 }
                 0x80 => {
+                    #[allow(clippy::int_plus_one)]
                     if src.remaining() >= 1 + 6 {
-                        let _ = src.get_u8();
+                        src.advance(1); // tag byte
                         let road = src.get_u16();
                         let mile = src.get_u16();
                         let limit = src.get_u16();

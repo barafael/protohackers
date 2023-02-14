@@ -1,7 +1,7 @@
 #![feature(iter_array_chunks)]
 
 use crate::camera::CameraClient;
-use crate::client::{client_action, Action};
+use crate::client::Action;
 use crate::dispatcher::Dispatcher;
 use async_channel as mpmc;
 use collector::Collector;
@@ -29,7 +29,7 @@ mod heartbeat;
 async fn main() -> anyhow::Result<()> {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::DEBUG)
-        .with_ansi(false)
+        //.with_ansi(false)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
@@ -79,10 +79,10 @@ where
             Some(msg) = reader.next() => {
                 match msg {
                     Ok(msg) => {
-                        let action = client_action(msg, &mut heartbeat_sender);
+                        let action = client::action(msg, &mut heartbeat_sender);
                         match action {
                             Action::None => {},
-                            Action::Reply(r) => writer.send(r).await?,
+                            Action::Error(r) => writer.send(r).await?,
                             Action::SpawnCamera(c) => {
                                 let client = CameraClient::new(c);
                                 CameraClient::run(client, reader, writer, plate_tx, heartbeat_sender, heartbeat_receiver).await?;

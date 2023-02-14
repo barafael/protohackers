@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
                                 writer.send(message).await?;
                             }
                             Err(e) => {
-                                eprintln!("{e:#?}")
+                                eprintln!("{e:#?}");
                             }
                         }
                     }

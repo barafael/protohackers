@@ -38,12 +38,12 @@ impl Collector {
             tokio::select! {
                 Some((record, camera)) = reporting.recv() => {
                     tracing::info!("{camera:?} reports {record:?}");
-                    let tickets = self.insert_record(record, camera).await?;
+                    let tickets = self.insert_record(record, camera);
                     self.dispatch_tickets(&tickets).await?;
                 }
                 Some((road, sender)) = dispatcher_subscription.recv() => {
                     tracing::info!("Received subscription for road {road}");
-                    let ticket_sender = self.insert_dispatcher(road).await?;
+                    let ticket_sender = self.insert_dispatcher(road);
                     let _x = sender.send(ticket_sender);
                 }
                 else => break
@@ -56,13 +56,13 @@ impl Collector {
         Ok(())
     }
 
-    pub async fn insert_dispatcher(
-        &mut self,
-        road: u16,
-    ) -> anyhow::Result<mpmc::Receiver<TicketRecord>> {
+    pub fn insert_dispatcher(&mut self, road: u16) -> mpmc::Receiver<TicketRecord> {
         // Create new channel for this road
-        let (_, receiver) = self.dispatchers.entry(road).or_insert(mpmc::bounded(1024));
-        Ok(receiver.clone())
+        let (_, receiver) = self
+            .dispatchers
+            .entry(road)
+            .or_insert_with(|| mpmc::bounded(1024));
+        receiver.clone()
     }
 
     async fn dispatch_tickets(&mut self, tickets: &[TicketRecord]) -> anyhow::Result<()> {
@@ -81,7 +81,7 @@ impl Collector {
                 let (tx, _) = self
                     .dispatchers
                     .entry(ticket.road)
-                    .or_insert(mpmc::bounded(1024));
+                    .or_insert_with(|| mpmc::bounded(1024));
                 tx.send(ticket.clone()).await?;
                 break;
             }
@@ -89,11 +89,11 @@ impl Collector {
         Ok(())
     }
 
-    async fn insert_record(
+    fn insert_record(
         &mut self,
         PlateRecord { plate, timestamp }: PlateRecord,
         Camera { road, mile, limit }: Camera,
-    ) -> anyhow::Result<Vec<TicketRecord>> {
+    ) -> Vec<TicketRecord> {
         let limit = limit.saturating_mul(100);
         self.limits.insert(road, limit);
 
@@ -125,7 +125,7 @@ impl Collector {
                     mile2: mile,
                     timestamp2: timestamp,
                     speed,
-                })
+                });
             }
         }
         if let Some((later, next_mile)) = next {
@@ -138,11 +138,11 @@ impl Collector {
                     mile2: next_mile,
                     timestamp2: later,
                     speed,
-                })
+                });
             }
         }
 
-        Ok(tickets)
+        tickets
     }
 
     fn is_violation(limit: u16, ts1: u32, ts2: u32, mile1: u16, mile2: u16) -> Option<u16> {
@@ -227,6 +227,17 @@ mod test {
         col.run(receiver, disp_rx).await.unwrap();
         let ticket_rx = rx.await.unwrap();
         let val = ticket_rx.recv().await.unwrap();
-        dbg!(val);
+        assert_eq!(
+            val,
+            TicketRecord {
+                plate: "ABC".to_string(),
+                road: 12,
+                mile1: 2,
+                timestamp1: 1,
+                mile2: 4,
+                timestamp2: 20,
+                speed: 37900,
+            }
+        );
     }
 }

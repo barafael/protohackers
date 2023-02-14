@@ -5,29 +5,29 @@ use tokio::sync::mpsc;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     None,
-    Reply(server::Message),
+    Error(server::Message),
     SpawnCamera(Camera),
     SpawnDispatcher(Vec<u16>),
 }
 
-pub fn client_action(msg: Message, heartbeat_sender: &mut Option<mpsc::Sender<()>>) -> Action {
+pub fn action(msg: Message, heartbeat_sender: &mut Option<mpsc::Sender<()>>) -> Action {
     match msg {
         Message::Plate(record) => {
             tracing::warn!("Ignoring {record:?} due to client not having specialized as camera");
-            Action::Reply(server::Message::Error("You are no camera".to_string()))
+            Action::Error(server::Message::Error("You are no camera".to_string()))
         }
         Message::WantHeartbeat(dur) => {
             if let Some(heartbeat_sender) = heartbeat_sender.take() {
-                if !dur.is_zero() {
-                    tracing::info!("Spawning a new heartbeat");
-                    tokio::spawn(heartbeat::heartbeat(dur, heartbeat_sender));
-                } else {
+                if dur.is_zero() {
                     tracing::warn!("Ignoring zero-duration heartbeat");
+                } else {
+                    tracing::info!("Spawning a new heartbeat");
+                    tokio::spawn(heartbeat::run(dur, heartbeat_sender));
                 }
                 Action::None
             } else {
                 tracing::warn!("Ignoring repeated heartbeat request");
-                Action::Reply(server::Message::Error(
+                Action::Error(server::Message::Error(
                     "You already specified a heartbeat".to_string(),
                 ))
             }

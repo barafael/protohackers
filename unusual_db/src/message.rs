@@ -11,12 +11,12 @@ impl FromStr for Message {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some((key, value)) = s.split_once('=') {
-            Ok(Message::Insert {
+            Ok(Self::Insert {
                 key: key.to_string(),
                 value: value.to_string(),
             })
         } else {
-            Ok(Message::Query(s.to_string()))
+            Ok(Self::Query(s.to_string()))
         }
     }
 }

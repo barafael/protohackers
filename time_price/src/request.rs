@@ -8,7 +8,7 @@ pub enum Request {
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct RequestDecoder;
+pub struct RequestDecoder;
 
 impl Decoder for RequestDecoder {
     type Item = Request;

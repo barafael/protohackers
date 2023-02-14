@@ -13,7 +13,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut stream = TcpStream::connect(args.socket).context("Failed to connect to socket")?;
 
-    if let Action::Repl = args.action {
+    if matches!(args.action, Action::Repl) {
         let mut stream_clone = stream.try_clone().unwrap();
         std::thread::spawn(move || {
             let mut stdout = stdout();
