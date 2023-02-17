@@ -1,0 +1,12 @@
+[package]
+name = "line_reversal"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.68"
+bytes = "1.4.0"
+futures-util = { version = "0.3.26", features = ["sink"] }
+tokio = { version = "1.25.0", features = ["full"] }
+tokio-util = { version = "0.7.7", features = ["codec", "net"] }
+lrcp_codec = { path = "../lrcp_codec" }

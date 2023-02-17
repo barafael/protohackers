@@ -6,11 +6,11 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.68"
 clap = { version = "4.1.4", features = ["derive"] }
-rustyline = "10.1.1"
-tokio = { version = "1.25.0", features = ["full"] }
-speedd_codecs = { path = "../speedd_codecs" }
-tokio-util = { version = "0.7.4", features = ["codec"] }
 futures = "0.3.26"
 humantime = "2.1.0"
 itertools = "0.10.5"
 ron = "0.8"
+rustyline = "10.1.1"
+speedd_codecs = { path = "../speedd_codecs" }
+tokio = { version = "1.25.0", features = ["full"] }
+tokio-util = { version = "0.7.4", features = ["codec"] }

@@ -11,4 +11,7 @@ members = [
     "speedd_clients",
     "speedd_codecs",
     "speedd",
+    "line_reversal",
+    "lrcp_codec",
+    "lrcp_client",
 ]

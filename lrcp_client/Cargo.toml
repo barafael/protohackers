@@ -1,12 +1,15 @@
 [package]
-name = "mob_proxy"
+name = "lrcp_client"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 anyhow = "1.0.68"
+clap = { version = "4.1.4", features = ["derive"] }
+lrcp_codec = { path = "../lrcp_codec" }
 futures = "0.3.26"
-lazy_static = "1.4.0"
-regex = "1.7.1"
+itertools = "0.10.5"
+ron = "0.8"
+rustyline = "10.1.1"
 tokio = { version = "1.25.0", features = ["full"] }
 tokio-util = { version = "0.7.4", features = ["codec"] }
