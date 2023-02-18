@@ -1,15 +1,19 @@
-use anyhow::{anyhow, Context};
+use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
-const SEPARATOR: char = '/';
+macro_rules! regex {
+    ($re:literal $(,)?) => {{
+        static RE: once_cell::sync::OnceCell<regex::Regex> = once_cell::sync::OnceCell::new();
+        RE.get_or_init(|| regex::Regex::new($re).unwrap())
+    }};
+}
+
 const ESCAPE: char = '\\';
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Frame {
-    Connect {
-        session: u32,
-    },
+    Connect(u32),
     Ack {
         session: u32,
         length: u32,
@@ -22,77 +26,57 @@ pub enum Frame {
     Close(u32),
 }
 
-impl FromStr for Frame {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        anyhow::ensure!(s.starts_with('/'), "Message does not start with '/'");
-        anyhow::ensure!(s.ends_with('/'), "Message does not end with '/'");
-        // todo: ensure that last slash is not escaped?
-        let tokens = tokenize(s);
-        let tokens = &tokens[1..tokens.len() - 1];
-        match tokens.first() {
-            None => Err(anyhow::anyhow!("No tokens")),
-            Some(c) if c == "connect" => {
-                anyhow::ensure!(
-                    tokens.len() == 2,
-                    "Invalid argument count for connect: {tokens:?}"
-                );
-                let session = tokens.get(1).context("Missing session id field")?;
-                let session = parse_number(session).context("Failed to parse session id")?;
-                Ok(Frame::Connect { session })
-            }
-            Some(d) if d == "data" => {
-                anyhow::ensure!(
-                    tokens.len() == 4,
-                    "Invalid argument count for data: {tokens:?}"
-                );
-                let session = tokens.get(1).context("Missing session id field")?;
-                let session = parse_number(session).context("Failed to parse session id")?;
-                let position = tokens.get(2).context("Missing pos field")?;
-                let position = parse_number(position).context("Failed to parse data position")?;
-                let data = tokens.get(3).context("Missing data field")?;
-                Ok(Frame::Data {
-                    session,
-                    position,
-                    data: data.to_string(),
-                })
-            }
-            Some(a) if a == "ack" => {
-                anyhow::ensure!(
-                    tokens.len() == 3,
-                    "Invalid argument count for ack: {tokens:?}"
-                );
-                let session = tokens.get(1).context("Missing session id field")?;
-                let session = parse_number(session).context("Failed to parse session id")?;
-                let length = tokens.get(2).context("Missing pos field")?;
-                let length = parse_number(length).context("Failed to parse length")?;
-                Ok(Frame::Ack { session, length })
-            }
-            Some(c) if c == "close" => {
-                anyhow::ensure!(
-                    tokens.len() == 2,
-                    "Invalid argument count for close: {tokens:?}"
-                );
-                let session = tokens.get(1).context("Missing session id field")?;
-                let session = parse_number(session).context("Failed to parse session id")?;
-                Ok(Frame::Close(session))
-            }
-            Some(c) => Err(anyhow!("Invalid command {c}")),
+impl Frame {
+    pub fn session_id(&self) -> u32 {
+        match self {
+            Frame::Connect(s) => *s,
+            Frame::Ack { session, .. } => *session,
+            Frame::Data { session, .. } => *session,
+            Frame::Close(s) => *s,
         }
     }
 }
 
-fn tokenize(string: &str) -> Vec<String> {
+impl FromStr for Frame {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let connect = regex!(r"^/connect/(\d+)/$");
+        let data = regex!(r"^/data/(\d+)/(\d+)/((\\/|\\\\|[^/])+)/$");
+        let ack = regex!(r"^/ack/(\d+)/(\d+)/$");
+        let close = regex!(r"^/close/(\d+)/$");
+
+        if let Some(caps) = connect.captures(s) {
+            let session = parse_number(&caps[1])?;
+            Ok(Frame::Connect(session))
+        } else if let Some(caps) = data.captures(s) {
+            let session = parse_number(&caps[1])?;
+            let position = parse_number(&caps[2])?;
+            let data = caps[3].to_string();
+            let data = unescape(&data);
+            Ok(Frame::Data {
+                session,
+                position,
+                data,
+            })
+        } else if let Some(caps) = ack.captures(s) {
+            let session = parse_number(&caps[1])?;
+            let length = parse_number(&caps[2])?;
+            Ok(Frame::Ack { session, length })
+        } else if let Some(caps) = close.captures(s) {
+            let session = parse_number(&caps[1])?;
+            Ok(Frame::Close(session))
+        } else {
+            Err(anyhow!("Invalid message {s}"))
+        }
+    }
+}
+
+fn unescape(string: &str) -> String {
     let mut token = String::new();
-    let mut tokens: Vec<String> = Vec::new();
     let mut chars = string.chars();
     while let Some(ch) = chars.next() {
         match ch {
-            SEPARATOR => {
-                tokens.push(token.clone());
-                token.clear();
-            }
             ESCAPE => {
                 if let Some(next) = chars.next() {
                     token.push(next);
@@ -101,12 +85,99 @@ fn tokenize(string: &str) -> Vec<String> {
             _ => token.push(ch),
         }
     }
-    tokens.push(token);
-    tokens
+    token
 }
 
 fn parse_number(n: &str) -> anyhow::Result<u32> {
     let number = n.parse::<u32>()?;
     anyhow::ensure!(number < 2147483648);
     Ok(number)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn parses_connect() {
+        let string = r"/connect/123/";
+        let frame = Frame::from_str(&string).unwrap();
+        assert_eq!(Frame::Connect(123), frame);
+    }
+
+    #[test]
+    fn parses_data() {
+        let string = r"/data/1234567/0/hello
+/";
+        let frame = Frame::from_str(&string).unwrap();
+        assert_eq!(
+            Frame::Data {
+                session: 1234567,
+                position: 0,
+                data: "hello\n".to_string()
+            },
+            frame
+        );
+    }
+
+    #[test]
+    fn parses_single_slash_message() {
+        let string = r"/data/1234568/0/\//";
+        let frame = Frame::from_str(&string).unwrap();
+        assert_eq!(
+            Frame::Data {
+                session: 1234568,
+                position: 0,
+                data: r"/".to_string()
+            },
+            frame
+        );
+    }
+
+    #[test]
+    fn backslashes() {
+        let string = r"/data/1981800348/0/foo\/bar\/baz
+foo\\bar\\baz
+/";
+        let frame = Frame::from_str(&string).unwrap();
+        assert_eq!(
+            frame,
+            Frame::Data {
+                session: 1981800348,
+                position: 0,
+                data: r"foo/bar/baz
+foo\bar\baz
+"
+                .to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn unescapes_backslashes() {
+        let string = r"foo\/bar\\baz";
+        let result = unescape(string);
+        assert_eq!(result, r"foo/bar\baz");
+    }
+
+    #[test]
+    fn unescapes_backslashes_2() {
+        let string = "some data with a slash\n";
+        let result = unescape(string);
+        assert_eq!(result, "some data with a slash\n");
+    }
+
+    #[test]
+    fn unescapes_backslashes_3() {
+        let string = r"foo\/bar\/baz
+foo\\\\bar\\baz
+";
+        let result = unescape(string);
+        assert_eq!(
+            result,
+            r"foo/bar/baz
+foo\\bar\baz
+"
+        );
+    }
 }

@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.68"
 bytes = "1.4.0"
-futures-util = { version = "0.3.26", features = ["sink"] }
 tokio-util = { version = "0.7.7", features = ["codec", "net"] }
 serde = { version = "1", features = ["derive"] }
+log = "0.4.17"
+regex = "1.7.1"
+once_cell = "1.17.1"

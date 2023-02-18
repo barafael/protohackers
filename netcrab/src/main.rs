@@ -2,6 +2,7 @@ use anyhow::Context;
 use arguments::{parse_hex_digit, Action, Arguments, Delimiter};
 use clap::Parser;
 use rustyline::error::ReadlineError;
+use rustyline::history::DefaultHistory;
 use rustyline::Editor;
 use std::io::{stdout, Write};
 use std::net::TcpStream;
@@ -21,12 +22,12 @@ fn main() -> anyhow::Result<()> {
                 .context("Failed forwarding")
                 .unwrap();
         });
-        let mut rl = Editor::<()>::new()?;
+        let mut rl = Editor::<(), DefaultHistory>::new()?;
         loop {
             let readline = rl.readline(">> ");
             match readline {
                 Ok(line) => {
-                    rl.add_history_entry(line.as_str());
+                    rl.add_history_entry(line.as_str())?;
                     if args.hex {
                         let line = line
                             .split_whitespace()

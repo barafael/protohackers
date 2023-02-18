@@ -2,7 +2,7 @@ use arguments::Arguments;
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use lrcp_codec::Frame;
-use rustyline::error::ReadlineError;
+use rustyline::{error::ReadlineError, history::DefaultHistory};
 use tokio::net::UdpSocket;
 use tokio_util::udp::UdpFramed;
 
@@ -27,21 +27,26 @@ async fn main() -> anyhow::Result<()> {
             println!("{msg:?}");
         }
     });
-    let ack = Frame::Ack {
-        session: 123,
-        length: 456,
-    };
+    let connect = Frame::Connect(123);
     let data = Frame::Data {
         session: 123,
-        position: 5,
-        data: "some/data/with/slashes".to_string(),
+        position: 0,
+        data: r"some data with \/ sla\\h".to_string(),
+    };
+    let ack = Frame::Ack {
+        session: 123,
+        length: 23,
     };
     println!(
-        "RON input, such as:\n{}\nor\n{}",
+        "RON input, such as:\n{}\nor\n{}\nor\n{}",
+        ron::to_string(&connect).unwrap(),
+        ron::to_string(&data).unwrap(),
         ron::to_string(&ack).unwrap(),
-        ron::to_string(&data).unwrap()
     );
-    let mut rl = rustyline::Editor::<()>::new()?;
+    println!("Type CTRL+V CTRL+J to insert a newline without submitting the input (might not work on some shells).");
+    println!("As per protocol, the application layer processes bytes only line-wise!");
+    println!("CTRL+C and CTRL+D to quit.");
+    let mut rl = rustyline::Editor::<(), DefaultHistory>::new()?;
     loop {
         let readline = rl.readline(">> ");
         match readline {
@@ -49,14 +54,14 @@ async fn main() -> anyhow::Result<()> {
                 if line.is_empty() {
                     continue;
                 }
-                rl.add_history_entry(&line);
+                rl.add_history_entry(&line)?;
                 let message: Result<Frame, _> = ron::from_str(&line);
                 match message {
                     Ok(message) => {
                         sink.send((message, args.remote_address)).await?;
                     }
                     Err(e) => {
-                        eprintln!("{e:#?}");
+                        println!("{e:#?}");
                     }
                 }
             }

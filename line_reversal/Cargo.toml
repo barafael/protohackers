@@ -10,3 +10,6 @@ futures-util = { version = "0.3.26", features = ["sink"] }
 tokio = { version = "1.25.0", features = ["full"] }
 tokio-util = { version = "0.7.7", features = ["codec", "net"] }
 lrcp_codec = { path = "../lrcp_codec" }
+tracing = "0.1.37"
+tracing-subscriber = "0.3.16"
+tracing-log = "0.1.3"

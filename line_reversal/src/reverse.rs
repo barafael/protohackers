@@ -20,11 +20,13 @@ impl Reverse {
         loop {
             match framed.next().await {
                 Some(Ok(msg)) => {
+                    tracing::trace!("Got some data {msg}, reversing it");
                     let reversed = msg.chars().rev().collect::<String>();
+                    tracing::trace!("Reversed: {reversed:?}");
                     framed.send(reversed).await?;
                 }
                 Some(Err(e)) => {
-                    println!("{e:?}");
+                    tracing::warn!("{e:?}");
                 }
                 _ => break,
             }

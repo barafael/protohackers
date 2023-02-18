@@ -1,7 +1,7 @@
 use arguments::{Arguments, Mode};
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
-use rustyline::error::ReadlineError;
+use rustyline::{error::ReadlineError, history::DefaultHistory};
 use speedd_codecs::{
     camera::Camera,
     client::{self, encoder::MessageEncoder as Encoder},
@@ -48,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
                 ron::to_string(&wanthb).unwrap(),
                 ron::to_string(&iam).unwrap()
             );
-            let mut rl = rustyline::Editor::<()>::new()?;
+            let mut rl = rustyline::Editor::<(), DefaultHistory>::new()?;
             loop {
                 let readline = rl.readline(">> ");
                 match readline {
@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
                         if line.is_empty() {
                             continue;
                         }
-                        rl.add_history_entry(&line);
+                        rl.add_history_entry(&line)?;
                         let message: Result<client::Message, _> = ron::from_str(&line);
                         match message {
                             Ok(message) => {
@@ -110,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
                 .send(client::Message::IAmCamera(Camera { road, mile, limit }))
                 .await?;
 
-            let mut rl = rustyline::Editor::<()>::new()?;
+            let mut rl = rustyline::Editor::<(), DefaultHistory>::new()?;
             loop {
                 let readline = rl.readline(">> ");
                 match readline {
@@ -119,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
                         match (tokens.next(), tokens.next()) {
                             (Some(plate), Some(timestamp)) => {
                                 if let Ok(timestamp) = timestamp.parse() {
-                                    rl.add_history_entry(&line);
+                                    rl.add_history_entry(&line)?;
                                     let message = client::Message::Plate(PlateRecord {
                                         plate: plate.to_string(),
                                         timestamp,

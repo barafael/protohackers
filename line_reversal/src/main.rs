@@ -1,83 +1,138 @@
+use crate::reverse::Reverse;
+use crate::writer::Writer;
 use futures_util::{SinkExt, StreamExt};
 use lrcp_codec::Frame;
 use lrcp_codec::Lrcp;
-use session::Session;
+use reader::Reader;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use tokio::io::duplex;
+use tokio::io::split;
 use tokio::net::UdpSocket;
+use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tokio_util::udp::UdpFramed;
+use tracing::Level;
+use tracing_subscriber::FmtSubscriber;
 
+mod reader;
 mod reverse;
-mod session;
+mod writer;
 
-#[derive(Debug, Default)]
-pub struct Sessions(HashMap<(u32, SocketAddr), Session>);
+/// Maps a session ID to its socket address.
+pub type Sessions = HashMap<u32, SocketAddr>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let subscriber = FmtSubscriber::builder()
+        .compact()
+        .with_ansi(false)
+        .with_max_level(Level::DEBUG)
+        .with_file(true)
+        .with_line_number(true)
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    tracing_log::LogTracer::init()?;
+
     let mut sessions = Sessions::default();
 
     let socket = UdpSocket::bind("0.0.0.0:8000".parse::<SocketAddr>().unwrap()).await?;
     let framed = UdpFramed::new(socket, Lrcp::default());
     let (mut sink, mut stream) = framed.split();
-    while let Some(msg) = stream.next().await {
-        dbg!(&msg);
-        match msg {
-            Ok((frame, addr)) => match frame {
-                Frame::Connect { session } => {
-                    let key = (session, addr);
-                    // Does the session already exist?
-                    if let Some(value) = sessions.0.get(&key) {
-                        println!("Sending repeated ACK for existing session (id: {session})");
-                        sink.send((
-                            Frame::Ack {
-                                session: value.id,
-                                length: value.length,
-                            },
-                            addr,
-                        ))
-                        .await?;
-                    } else {
-                        println!("Opening new session with id {session}");
-                        let ses = Session::with_id(session);
-                        sessions.0.insert(key, ses);
-                        // send ACK
-                        sink.send((Frame::Ack { session, length: 0 }, addr)).await?;
+
+    // Broadcast received UDP messages to all client handlers.
+    let (b_tx, _b_rx) = broadcast::channel::<Frame>(64);
+
+    // Collect UDP messages to be sent from all client handlers.
+    let (m_tx, mut m_rx) = mpsc::channel::<Frame>(64);
+
+    loop {
+        tokio::select! {
+            // Incoming UDP messages: lookup session and/or forward to `b_tx`.
+            Some(msg) = stream.next() => {
+                match msg {
+                    Ok((Frame::Connect(session), addr)) => {
+                        // Does the session already exist?
+                        if sessions.contains_key(&session) {
+                            b_tx.send(Frame::Connect(session))?;
+                        } else {
+                            handle_connect(&mut sessions, session, addr, &m_tx, &b_tx).await?;
+                        }
                     }
-                }
-                Frame::Data {
-                    session,
-                    position,
-                    data,
-                } => {
-                    let key = (session, addr);
-                    if !sessions.0.contains_key(&key) {
-                        sink.send((Frame::Close(session), addr)).await?;
-                    } else {
-                        let value = sessions.0.get_mut(&key).unwrap();
-                    }
-                    todo!()
-                }
-                Frame::Ack { session, length } => {
-                    let key = (session, addr);
-                    if !sessions.0.contains_key(&key) {
+                    Ok((Frame::Close(session), addr)) => {
+                        if sessions.remove(&session).is_some() {
+                            tracing::info!("Removing session with id {session}");
+                        } else {
+                            tracing::info!("Session with id {session} does not exist, ignoring close");
+                        }
+                        b_tx.send(Frame::Close(session))?;
                         sink.send((Frame::Close(session), addr)).await?;
                     }
-                }
-                Frame::Close(s) => {
-                    let key = (s, addr);
-                    sink.send((Frame::Close(key.0), addr)).await?;
-                    if let Some(s) = sessions.0.remove(&key) {
-                        println!("Removing session {s:?}");
-                    } else {
-                        println!("Session with id {s} does not exist, not closing");
+                    Ok((Frame::Data { session, position, data }, addr)) => {
+                        if sessions.contains_key(&session) {
+                            b_tx.send(Frame::Data { session, position, data })?;
+                        } else {
+                            tracing::info!(
+                                "Ignoring data for session with id {session} which does not exist"
+                            );
+                            sink.send((Frame::Close(session), addr)).await?;
+                        }
+                    }
+                    Ok( (Frame::Ack { session, length }, addr)) => {
+                        if sessions.contains_key(&session) {
+                            b_tx.send(Frame::Ack{ session, length })?;
+                        } else {
+                            tracing::info!("Ignoring stray ack for session {session} with length {length} (no such session)");
+                            sink.send((Frame::Close(session), addr)).await?;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::info!("{e:?}");
                     }
                 }
-            },
-            Err(e) => {
-                eprintln!("{e:?}");
             }
+            // Forward messages from client handlers to the UDP socket.
+            Some(msg) = m_rx.recv() => {
+                let session = msg.session_id();
+                if let Some(addr) = sessions.get(&session) {
+                    sink.send((msg, *addr)).await?;
+                } else {
+                    tracing::info!("Could not find session for id {session}");
+                    tracing::info!("Dropping {msg:?}")
+                }
+            }
+            else => break
         }
     }
+    Ok(())
+}
+
+async fn handle_connect(
+    sessions: &mut Sessions,
+    id: u32,
+    addr: SocketAddr,
+    m_tx: &mpsc::Sender<Frame>,
+    b_tx: &broadcast::Sender<Frame>,
+) -> anyhow::Result<()> {
+    tracing::info!("Opening new session with id {id}");
+    sessions.insert(id, addr);
+
+    m_tx.send(Frame::Ack {
+        session: id,
+        length: 0,
+    })
+    .await?;
+
+    let reader = Reader::with_id(id);
+    let writer = Writer::with_id(id);
+    let (transport, application) = duplex(1000);
+    let (read, write) = split(transport);
+    let rev = Reverse::new().run(application);
+    let reader = reader.run(write, m_tx.clone(), b_tx.subscribe());
+    let writer = writer.run(read, m_tx.clone(), b_tx.subscribe(), b_tx.clone());
+    tokio::spawn(reader);
+    tokio::spawn(rev);
+    tokio::spawn(writer);
     Ok(())
 }
