@@ -1,4 +1,5 @@
 use lrcp_codec::Frame;
+use std::sync::Arc;
 use tokio::{
     io::{AsyncWriteExt, DuplexStream, WriteHalf},
     sync::{broadcast, mpsc},
@@ -19,13 +20,13 @@ impl Reader {
         mut self,
         mut channel: WriteHalf<DuplexStream>,
         writer: mpsc::Sender<Frame>,
-        mut reader: broadcast::Receiver<Frame>,
+        mut reader: broadcast::Receiver<Arc<Frame>>,
     ) -> anyhow::Result<()> {
         while let Ok(msg) = reader.recv().await {
             if msg.session_id() != self.id {
                 continue;
             }
-            match msg {
+            match *msg {
                 Frame::Connect(_) => {
                     tracing::info!(
                         "Sending repeated ACK for existing session (id: {})",
@@ -36,7 +37,9 @@ impl Reader {
                 Frame::Ack { .. } => {
                     // Don't care about Ack in reader
                 }
-                Frame::Data { position, data, .. } => {
+                Frame::Data {
+                    position, ref data, ..
+                } => {
                     let frame = self.handle_data(position, data, &mut channel).await?;
                     writer.send(frame).await?;
                 }
@@ -64,7 +67,7 @@ impl Reader {
     async fn handle_data(
         &mut self,
         position: u32,
-        data: String,
+        data: &str,
         channel: &mut WriteHalf<DuplexStream>,
     ) -> anyhow::Result<Frame> {
         if position == self.length {

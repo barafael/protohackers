@@ -1,5 +1,5 @@
 use lrcp_codec::Frame;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, DuplexStream, ReadHalf},
     sync::{broadcast, mpsc},
@@ -21,8 +21,8 @@ impl Writer {
         mut self,
         mut channel: ReadHalf<DuplexStream>,
         writer: mpsc::Sender<Frame>,
-        mut reader: broadcast::Receiver<Frame>,
-        close: broadcast::Sender<Frame>,
+        mut reader: broadcast::Receiver<Arc<Frame>>,
+        close: broadcast::Sender<Arc<Frame>>,
     ) -> anyhow::Result<()> {
         let session_timer = sleep(Duration::from_secs(60));
         let repeat_timer = sleep(Duration::from_secs(3));
@@ -41,7 +41,7 @@ impl Writer {
                     tracing::info!("Resetting session timer"); // Why sometimes twice?
                     dbg!(&msg);
                     session_timer.as_mut().reset(Instant::now() + Duration::from_secs(60));
-                    match msg {
+                    match *msg {
                         Frame::Ack { length, .. } => {
                             if Some(Frame::Ack{session: self.id, length}) == awaiting_ack {
                                 self.length = length;
@@ -64,7 +64,7 @@ impl Writer {
                 }
                 () = &mut session_timer, if current_item.is_some() => {
                     tracing::info!("No traffic, ending session");
-                    close.send(Frame::Close(self.id))?;
+                    close.send(Arc::new(Frame::Close(self.id)))?;
                     // TODO writer.send(Frame::Close...))?
                     break;
                 }

@@ -6,6 +6,7 @@ use lrcp_codec::Lrcp;
 use reader::Reader;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::io::duplex;
 use tokio::io::split;
 use tokio::net::UdpSocket;
@@ -42,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
     let (mut sink, mut stream) = framed.split();
 
     // Broadcast received UDP messages to all client handlers.
-    let (b_tx, _b_rx) = broadcast::channel::<Frame>(64);
+    let (b_tx, _b_rx) = broadcast::channel::<Arc<Frame>>(64);
 
     // Collect UDP messages to be sent from all client handlers.
     let (m_tx, mut m_rx) = mpsc::channel::<Frame>(64);
@@ -55,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
                     Ok((Frame::Connect(session), addr)) => {
                         // Does the session already exist?
                         if sessions.contains_key(&session) {
-                            b_tx.send(Frame::Connect(session))?;
+                            b_tx.send(Arc::new(Frame::Connect(session)))?;
                         } else {
                             handle_connect(&mut sessions, session, addr, &m_tx, &b_tx).await?;
                         }
@@ -66,12 +67,12 @@ async fn main() -> anyhow::Result<()> {
                         } else {
                             tracing::info!("Session with id {session} does not exist, ignoring close");
                         }
-                        b_tx.send(Frame::Close(session))?;
+                        b_tx.send(Arc::new(Frame::Close(session)))?;
                         sink.send((Frame::Close(session), addr)).await?;
                     }
                     Ok((Frame::Data { session, position, data }, addr)) => {
                         if sessions.contains_key(&session) {
-                            b_tx.send(Frame::Data { session, position, data })?;
+                            b_tx.send(Arc::new(Frame::Data { session, position, data }))?;
                         } else {
                             tracing::info!(
                                 "Ignoring data for session with id {session} which does not exist"
@@ -81,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                     Ok( (Frame::Ack { session, length }, addr)) => {
                         if sessions.contains_key(&session) {
-                            b_tx.send(Frame::Ack{ session, length })?;
+                            b_tx.send(Arc::new(Frame::Ack{ session, length }))?;
                         } else {
                             tracing::info!("Ignoring stray ack for session {session} with length {length} (no such session)");
                             sink.send((Frame::Close(session), addr)).await?;
@@ -113,7 +114,7 @@ async fn handle_connect(
     id: u32,
     addr: SocketAddr,
     m_tx: &mpsc::Sender<Frame>,
-    b_tx: &broadcast::Sender<Frame>,
+    b_tx: &broadcast::Sender<Arc<Frame>>,
 ) -> anyhow::Result<()> {
     tracing::info!("Opening new session with id {id}");
     sessions.insert(id, addr);
