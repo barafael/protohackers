@@ -47,7 +47,10 @@ impl Encoder<Frame> for Lrcp {
                 position,
                 data,
             } => {
-                let data = escape(&data);
+                anyhow::ensure!(
+                    data.len() + 17 < 1000,
+                    "Data length exceeds framing limit of <1000 byte."
+                );
                 let data = format!("/data/{session}/{position}/{data}/");
                 dst.put_slice(data.as_bytes());
                 Ok(())
@@ -59,16 +62,4 @@ impl Encoder<Frame> for Lrcp {
             }
         }
     }
-}
-
-fn escape(string: &str) -> String {
-    let mut token = String::new();
-    let mut chars = string.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\\' || ch == '/' {
-            token.push('\\');
-        }
-        token.push(ch);
-    }
-    token
 }

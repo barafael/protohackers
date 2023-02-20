@@ -2,14 +2,14 @@ use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
+use crate::unescape::unescape;
+
 macro_rules! regex {
     ($re:literal $(,)?) => {{
         static RE: once_cell::sync::OnceCell<regex::Regex> = once_cell::sync::OnceCell::new();
         RE.get_or_init(|| regex::Regex::new($re).unwrap())
     }};
 }
-
-const ESCAPE: char = '\\';
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Frame {
@@ -70,22 +70,6 @@ impl FromStr for Frame {
             Err(anyhow!("Invalid message {s}"))
         }
     }
-}
-
-fn unescape(string: &str) -> String {
-    let mut token = String::new();
-    let mut chars = string.chars();
-    while let Some(ch) = chars.next() {
-        match ch {
-            ESCAPE => {
-                if let Some(next) = chars.next() {
-                    token.push(next);
-                }
-            }
-            _ => token.push(ch),
-        }
-    }
-    token
 }
 
 fn parse_number(n: &str) -> anyhow::Result<u32> {

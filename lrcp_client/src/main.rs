@@ -43,9 +43,9 @@ async fn main() -> anyhow::Result<()> {
         ron::to_string(&data).unwrap(),
         ron::to_string(&ack).unwrap(),
     );
-    println!("Type CTRL+V CTRL+J to insert a newline without submitting the input (might not work on some shells).");
+    println!("Type CTRL+V CTRL+J to insert a newline without submitting the input (might not work on some shells such as vscode integrated terminal).");
     println!("As per protocol, the application layer processes bytes only line-wise!");
-    println!("CTRL+C and CTRL+D to quit.");
+    println!("CTRL+C to clear and CTRL+D to quit.");
     let mut rl = rustyline::Editor::<(), DefaultHistory>::new()?;
     loop {
         let readline = rl.readline(">> ");
@@ -66,8 +66,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             Err(ReadlineError::Interrupted) => {
-                println!("CTRL+C");
-                break;
+                continue;
             }
             Err(ReadlineError::Eof) => {
                 println!("CTRL+D");
