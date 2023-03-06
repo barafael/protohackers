@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
                     sink.send((msg, *addr)).await?;
                 } else {
                     tracing::info!("Could not find session for id {session}");
-                    tracing::info!("Dropping {msg:?}")
+                    tracing::info!("Dropping {msg:?}");
                 }
             }
             else => break

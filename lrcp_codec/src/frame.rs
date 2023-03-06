@@ -29,10 +29,8 @@ pub enum Frame {
 impl Frame {
     pub fn session_id(&self) -> u32 {
         match self {
-            Frame::Connect(s) => *s,
-            Frame::Ack { session, .. } => *session,
-            Frame::Data { session, .. } => *session,
-            Frame::Close(s) => *s,
+            Self::Connect(s) | Self::Close(s) => *s,
+            Self::Ack { session, .. } | Self::Data { session, .. } => *session,
         }
     }
 }
@@ -48,13 +46,13 @@ impl FromStr for Frame {
 
         if let Some(caps) = connect.captures(s) {
             let session = parse_number(&caps[1])?;
-            Ok(Frame::Connect(session))
+            Ok(Self::Connect(session))
         } else if let Some(caps) = data.captures(s) {
             let session = parse_number(&caps[1])?;
             let position = parse_number(&caps[2])?;
             let data = caps[3].to_string();
             let data = unescape(&data);
-            Ok(Frame::Data {
+            Ok(Self::Data {
                 session,
                 position,
                 data,
@@ -62,10 +60,10 @@ impl FromStr for Frame {
         } else if let Some(caps) = ack.captures(s) {
             let session = parse_number(&caps[1])?;
             let length = parse_number(&caps[2])?;
-            Ok(Frame::Ack { session, length })
+            Ok(Self::Ack { session, length })
         } else if let Some(caps) = close.captures(s) {
             let session = parse_number(&caps[1])?;
-            Ok(Frame::Close(session))
+            Ok(Self::Close(session))
         } else {
             Err(anyhow!("Invalid message {s}"))
         }

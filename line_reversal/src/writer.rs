@@ -1,5 +1,6 @@
 use itertools::Itertools;
 use lrcp_codec::Frame;
+use std::iter::Iterator;
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, DuplexStream, ReadHalf},
@@ -86,7 +87,7 @@ impl Writer {
                         close.send(Arc::new(Frame::Close(self.id)))?;
                         break;
                     }
-                    chunks.extend(buffer[..len].iter().map(|c| *c as char).chunks(1000 - 17).into_iter().map(|c| c.collect::<String>()).map(|s| lrcp_codec::escape::escape(&s)));
+                    chunks.extend(buffer[..len].iter().map(|c| *c as char).chunks(1000 - 17).into_iter().map(Iterator::collect::<String>).map(|s| lrcp_codec::escape::escape(&s)));
                     let item = chunks.pop_front().unwrap();
                     dbg!(&item);
                     awaiting_ack = Some(Frame::Ack {

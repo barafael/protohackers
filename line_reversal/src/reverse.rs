@@ -12,9 +12,7 @@ impl Reverse {
 
     pub async fn run<S>(self, stream: S) -> anyhow::Result<()>
     where
-        S: AsyncRead,
-        S: AsyncWrite,
-        S: Unpin,
+        S: AsyncRead + AsyncWrite + Unpin,
     {
         let mut framed = Framed::new(stream, LinesCodec::default());
         loop {

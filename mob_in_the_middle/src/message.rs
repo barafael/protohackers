@@ -26,7 +26,7 @@ impl Decoder for MessageDecoder {
                         tracing::trace!("found a seven, flushing");
                         let mut bytes = BytesMut::new();
                         bytes.put_u8(ch);
-                        *self = MessageDecoder::Buffering(bytes);
+                        *self = Self::Buffering(bytes);
                         let result = Ok(Some(response.clone().freeze()));
                         response.clear();
                         return result;
@@ -45,7 +45,7 @@ impl Decoder for MessageDecoder {
                     }
                     (b' ' | b'\n', 26..) => {
                         tracing::trace!("ending it! {bytes:?}");
-                        *bytes = BytesMut::from_iter(bogus::TONYS_ADDRESS.as_bytes().iter());
+                        *bytes = bogus::TONYS_ADDRESS.as_bytes().iter().collect::<BytesMut>();
                         bytes.put_u8(ch);
                         response = bytes.clone();
                         *self = Self::Forwarding;
