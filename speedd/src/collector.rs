@@ -7,7 +7,13 @@ use speedd_codecs::{
 use std::collections::{BTreeMap, HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
 
-#[derive(Debug)]
+/// Keeps records of the samples taken, such as observed speed measurements, ticketed days, and speed limits.
+/// Manages a map of roads to mpmc (tx, rx) pairs which transport dispatched tickets.
+/// The rx is kept for cloning it into new dispatchers which register for a specific road.
+/// The tx is used to dispatch tickets, making use of the work-stealing behaviour of the mpmc channel:
+/// if there are no dispatchers for a given road, the mpmc channel acts as a temporary queue, and
+/// if there are one or more registered dispatchers, only one of them gets the ticket.
+#[derive(Debug, Default)]
 pub struct Collector {
     records: HashMap<String, HashMap<Road, BTreeMap<Timestamp, Mile>>>,
     ticketed_days: HashMap<String, HashSet<u32>>,
@@ -17,12 +23,7 @@ pub struct Collector {
 
 impl Collector {
     pub fn new() -> Self {
-        Self {
-            records: HashMap::default(),
-            ticketed_days: HashMap::default(),
-            limits: HashMap::default(),
-            dispatchers: HashMap::default(),
-        }
+        Self::default()
     }
 
     pub async fn run(
@@ -44,7 +45,9 @@ impl Collector {
                 Some((road, sender)) = dispatcher_subscription.recv() => {
                     tracing::info!("Received subscription for road {road}");
                     let ticket_sender = self.insert_dispatcher(road);
-                    let _x = sender.send(ticket_sender);
+                    if let Err(_rx) = sender.send(ticket_sender) {
+                        tracing::warn!("They don't seem interested in this road anymore.");
+                    }
                 }
                 else => break
             }
@@ -52,7 +55,7 @@ impl Collector {
             //dbg!(&self.dispatchers.keys());
             //dbg!(&self.ticketed_days);
         }
-        tracing::info!("Ended Collector loop");
+        tracing::info!("Exiting Collector loop");
         Ok(())
     }
 
@@ -78,6 +81,7 @@ impl Collector {
                 for day in Self::days(ticket.timestamp1, ticket.timestamp2) {
                     ticketed_days.insert(day);
                 }
+                // find mpmc sender for this road, or create and register one
                 let (tx, _) = self
                     .dispatchers
                     .entry(ticket.road)

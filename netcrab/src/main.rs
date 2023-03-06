@@ -48,8 +48,7 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 Err(ReadlineError::Interrupted) => {
-                    println!("CTRL-C");
-                    break;
+                    continue;
                 }
                 Err(ReadlineError::Eof) => {
                     println!("CTRL-D");

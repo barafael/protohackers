@@ -12,52 +12,49 @@ impl Decoder for MessageDecoder {
     type Error = anyhow::Error;
 
     fn decode(&mut self, src: &mut bytes::BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        if let Some(first) = src.first() {
-            match first {
-                0x10 => {
-                    let Some(len) = src.get(1) else {
+        match src.first() {
+            Some(0x10) => {
+                let Some(len) = src.get(1) else {
                         return Ok(None);
                     };
-                    if src.remaining() < 1 + 1 + *len as usize {
-                        return Ok(None);
-                    }
-                    let bytes = String::from_utf8((src[2..2 + *len as usize]).to_vec())?;
-                    src.advance(1 + 1 + bytes.len());
-                    Ok(Some(super::Message::Error(bytes)))
+                if src.remaining() < 1 + 1 + *len as usize {
+                    return Ok(None);
                 }
-                0x21 => {
-                    let Some(len) = src.get(1) else {
-                        return Ok(None);
-                    };
-                    if src.remaining() < 1 + 1 + *len as usize + 16 {
-                        return Ok(None);
-                    }
-                    let plate = String::from_utf8((src[2..2 + *len as usize]).to_vec())?;
-                    src.advance(1 + 1 + *len as usize);
-                    let road = src.get_u16();
-                    let mile1 = src.get_u16();
-                    let timestamp1 = src.get_u32();
-                    let mile2 = src.get_u16();
-                    let timestamp2 = src.get_u32();
-                    let speed = src.get_u16();
-                    Ok(Some(super::Message::Ticket(TicketRecord {
-                        plate,
-                        road,
-                        mile1,
-                        timestamp1,
-                        mile2,
-                        timestamp2,
-                        speed,
-                    })))
-                }
-                0x41 => {
-                    src.advance(1);
-                    Ok(Some(super::Message::Heartbeat))
-                }
-                n => anyhow::bail!("Invalid opcode {n}"),
+                let bytes = String::from_utf8((src[2..2 + *len as usize]).to_vec())?;
+                src.advance(1 + 1 + bytes.len());
+                Ok(Some(super::Message::Error(bytes)))
             }
-        } else {
-            Ok(None)
+            Some(0x21) => {
+                let Some(len) = src.get(1) else {
+                        return Ok(None);
+                    };
+                if src.remaining() < 1 + 1 + *len as usize + 16 {
+                    return Ok(None);
+                }
+                let plate = String::from_utf8((src[2..2 + *len as usize]).to_vec())?;
+                src.advance(1 + 1 + *len as usize);
+                let road = src.get_u16();
+                let mile1 = src.get_u16();
+                let timestamp1 = src.get_u32();
+                let mile2 = src.get_u16();
+                let timestamp2 = src.get_u32();
+                let speed = src.get_u16();
+                Ok(Some(super::Message::Ticket(TicketRecord {
+                    plate,
+                    road,
+                    mile1,
+                    timestamp1,
+                    mile2,
+                    timestamp2,
+                    speed,
+                })))
+            }
+            Some(0x41) => {
+                src.advance(1);
+                Ok(Some(super::Message::Heartbeat))
+            }
+            Some(n) => anyhow::bail!("Invalid opcode {n}"),
+            None => Ok(None),
         }
     }
 }

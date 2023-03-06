@@ -43,6 +43,12 @@ async fn main() -> anyhow::Result<()> {
     let (reporting_tx, reporting_rx) = mpsc::channel(256);
     let (dispatcher_subscription_tx, dispatcher_subscription_rx) = mpsc::channel(16);
 
+    // for termination when collecting pgo profiles
+    //tokio::spawn(async move {
+    //tokio::time::sleep(std::time::Duration::from_secs(100)).await;
+    //std::process::exit(0);
+    //});
+
     tokio::spawn(Collector::new().run(reporting_rx, dispatcher_subscription_rx));
 
     while let Ok((inbound, addr)) = listener.accept().await {
