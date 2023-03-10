@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 pub mod decoder;
 pub mod encoder;
 
@@ -8,7 +10,7 @@ pub enum Message {
     Heartbeat,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TicketRecord {
     pub plate: String,
     pub road: u16,

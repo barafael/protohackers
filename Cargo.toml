@@ -1,17 +1,18 @@
 [workspace]
 
 members = [
-    "echo",
-    "primes_service",
-    "time_price",
     "budget_chat",
-    "unusual_db",
+    "echo",
+    "line_reversal",
+    "lrcp_client",
+    "lrcp_codec",
     "mob_in_the_middle",
     "netcrab",
+    "primes_service",
+    "speedd",
+    "speedd_benchy",
     "speedd_clients",
     "speedd_codecs",
-    "speedd",
-    "line_reversal",
-    "lrcp_codec",
-    "lrcp_client",
+    "time_price",
+    "unusual_db",
 ]

@@ -1,0 +1,21 @@
+[package]
+name = "speedd_benchy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.68"
+clap = { version = "4.1.4", features = ["derive"] }
+env_logger = "0.10.0"
+futures = "0.3.26"
+futures-util = "0.3.26"
+humantime-serde = "1.1.1"
+itertools = "0.10.5"
+log = "0.4.17"
+rand = "0.8.5"
+ron = "0.8"
+serde = { version = "1.0.154", features = ["derive"] }
+speedd_codecs = { path = "../speedd_codecs" }
+tokio = { version = "1.25.0", features = ["full"] }
+tokio-util = { version = "0.7.7", features = ["codec"] }
+toml = "0.7.2"
