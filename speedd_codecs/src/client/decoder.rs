@@ -16,8 +16,8 @@ impl Decoder for MessageDecoder {
         match src.first() {
             Some(0x20) => {
                 let Some(len) = src.get(1) else {
-                        return Ok(None);
-                    };
+                    return Ok(None);
+                };
                 if src.remaining() >= 1 + 1 + *len as usize + 4 {
                     let bytes = std::str::from_utf8(&src[2..2 + *len as usize]).unwrap();
                     let timestamp = u32::from_be_bytes(
@@ -61,8 +61,8 @@ impl Decoder for MessageDecoder {
             }
             Some(0x81) => {
                 let Some(len) = src.get(1) else {
-                        return Ok(None);
-                    };
+                    return Ok(None);
+                };
                 if src.remaining() < 1 + 1 + *len as usize * 2 {
                     return Ok(None);
                 }

@@ -34,7 +34,7 @@ pub struct Car {
 
 impl Sequence {
     pub fn new(landscape: &Landscape) -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = thread_rng();
         let mut roads: Vec<Road> = Vec::new();
 
         log::info!("Initialize roads with a random speed limit and no cameras");

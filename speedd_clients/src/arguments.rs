@@ -37,7 +37,7 @@ pub enum Mode {
         #[arg(short, long)]
         mile: u16,
 
-        /// Speed limits in `mp/h x 100` (yes, I know, but that's the problem statetment)
+        /// Speed limits in `mp/h x 100` (yes, I know, but that's the problem statement)
         #[arg(short, long)]
         limit: u16,
     },
