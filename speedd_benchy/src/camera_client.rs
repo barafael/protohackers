@@ -88,8 +88,7 @@ impl CameraClient {
                         log::info!("Connecting to {addr:?}");
                         let stream = TcpStream::connect(addr).await?;
                         let (reader, writer) = stream.into_split();
-                        let reader =
-                            FramedRead::new(reader, server::decoder::MessageDecoder::default());
+                        let reader = FramedRead::new(reader, server::decoder::MessageDecoder);
                         let writer = FramedWrite::new(writer, client::encoder::MessageEncoder);
                         connection = Some((reader, writer));
                     }

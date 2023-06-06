@@ -16,3 +16,5 @@ members = [
     "time_price",
     "unusual_db",
 ]
+
+resolver = "2"

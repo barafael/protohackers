@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     let mut sessions = Sessions::default();
 
     let socket = UdpSocket::bind("0.0.0.0:8000".parse::<SocketAddr>().unwrap()).await?;
-    let framed = UdpFramed::new(socket, Lrcp::default());
+    let framed = UdpFramed::new(socket, Lrcp);
     let (mut sink, mut stream) = framed.split();
 
     // Broadcast received UDP messages to all client handlers.

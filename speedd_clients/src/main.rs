@@ -21,8 +21,8 @@ async fn main() -> anyhow::Result<()> {
     let client = TcpStream::connect(args.address).await?;
     let (reader, writer) = client.into_split();
 
-    let mut reader = FramedRead::new(reader, Decoder::default());
-    let mut writer = FramedWrite::new(writer, Encoder::default());
+    let mut reader = FramedRead::new(reader, Decoder);
+    let mut writer = FramedWrite::new(writer, Encoder);
 
     if !args.interval.is_zero() {
         writer

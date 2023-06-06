@@ -54,8 +54,8 @@ async fn main() -> anyhow::Result<()> {
     while let Ok((inbound, addr)) = listener.accept().await {
         tracing::info!("Accepted connection from {addr}");
         let (reader, writer) = inbound.into_split();
-        let reader = FramedRead::new(reader, MessageDecoder::default());
-        let writer = FramedWrite::new(writer, server::encoder::MessageEncoder::default());
+        let reader = FramedRead::new(reader, MessageDecoder);
+        let writer = FramedWrite::new(writer, server::encoder::MessageEncoder);
         let reporting_tx = reporting_tx.clone();
         let dispatcher_tx = dispatcher_subscription_tx.clone();
         tokio::spawn(async move {
