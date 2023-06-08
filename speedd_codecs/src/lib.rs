@@ -10,7 +10,8 @@ pub type Mile = u16;
 pub type Road = u16;
 pub type Limit = u16;
 
-pub const SECONDS_PER_DAY: u32 = 86400;
+pub const SECONDS_PER_HOUR: u32 = 60 * 60;
+pub const SECONDS_PER_DAY: u32 = 24 * SECONDS_PER_HOUR;
 //pub const SECONDS_PER_DAY: u32 = 1000;
 
 #[cfg(test)]

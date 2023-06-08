@@ -1,7 +1,7 @@
 number_of_samples = 10
-number_of_roads = 16
-number_of_cameras = 40
-number_of_cars = 100
+number_of_roads = 1
+number_of_cameras = 8
+number_of_cars = 10
 number_of_dispatchers = 10
 ticket_likelihood = 0.1
 duration = "10s"

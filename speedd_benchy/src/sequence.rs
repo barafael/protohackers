@@ -1,12 +1,15 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     net::SocketAddr,
     time::Duration,
 };
 
+use itertools::Itertools;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
-use speedd_codecs::{camera::Camera, plate::PlateRecord, Mile, SECONDS_PER_DAY};
+use speedd_codecs::{
+    camera::Camera, plate::PlateRecord, Mile, Timestamp, SECONDS_PER_DAY, SECONDS_PER_HOUR,
+};
 use tokio::task::JoinHandle;
 
 use crate::{
@@ -79,53 +82,52 @@ impl Sequence {
         }
 
         log::info!("Generating events for all cars");
-        for road in &mut roads {
+        for road in &roads {
+            let mut reports: HashMap<&CameraClient, Vec<(Timestamp, String)>> = HashMap::new();
             for car in &road.cars {
                 // Start somewhere in the first 2 days
                 let mut last_timestamp = rng.gen_range(0..SECONDS_PER_DAY * 2);
-                for [(mile1, camera1), (mile2, camera2)] in road.cameras.iter_mut().array_chunks() {
+                let mut cameras = road.cameras.iter();
+                let Some((mut mile1, mut camera1)) = cameras.next() else {
+                    continue
+                };
+                for (mile2, camera2) in cameras {
                     let speed = if rng.gen::<f64>() < landscape.ticket_likelihood {
                         let too_fast = rng.gen_range(1..100);
                         road.limit + too_fast
                     } else {
                         rng.gen_range(5..road.limit)
                     };
-                    let report1 = PlateRecord {
-                        plate: car.plate.clone(),
-                        timestamp: last_timestamp,
-                    };
-                    camera1.reports.push(report1);
+                    let timestamp1 = last_timestamp;
                     let distance = mile1.abs_diff(*mile2);
-                    let time = distance / speed;
-                    last_timestamp += u32::from(time);
-                    let report2 = PlateRecord {
-                        plate: car.plate.clone(),
-                        timestamp: last_timestamp,
-                    };
-                    camera2.reports.push(report2);
+                    let time = distance as f64 / speed as f64;
+                    let time = hour_to_second(time) as u32;
+                    let timestamp2 = timestamp1 + time;
+                    last_timestamp = timestamp2;
+                    reports
+                        .entry(camera1)
+                        .or_default()
+                        .push((timestamp1, car.plate.clone()));
                 }
-            }
-        }
-        for road in &mut roads {
-            if landscape.shuffle_reports {
+                if landscape.shuffle_reports {
+                    reports.shuffle(&mut rng);
+                }
+                for (mile, report) in reports {}
                 for camera in road.cameras.values_mut() {
-                    camera.append_shuffled_reports(&mut rng);
+                    camera
+                        .actions
+                        .push(Action::Wait(Duration::from_millis(rng.gen_range(0..2000))));
+                    camera.actions.push(Action::Disconnect);
                 }
-            } else {
-                for camera in road.cameras.values_mut() {
-                    camera.append_reports(&mut rng);
-                }
-            }
-            for camera in road.cameras.values_mut() {
-                camera
-                    .actions
-                    .push(Action::Wait(Duration::from_millis(rng.gen_range(0..2000))));
-                camera.actions.push(Action::Disconnect);
             }
         }
 
         Self { roads }
     }
+}
+
+fn hour_to_second(hours: f64) -> f64 {
+    hours * SECONDS_PER_HOUR as f64
 }
 
 fn license_plate(rng: &mut ThreadRng) -> String {

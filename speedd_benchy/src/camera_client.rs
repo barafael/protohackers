@@ -1,7 +1,6 @@
 use std::{net::SocketAddr, time::Duration};
 
 use futures::SinkExt;
-use rand::prelude::SliceRandom;
 use rand::rngs::ThreadRng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -15,7 +14,7 @@ use tokio::{
 };
 use tokio_util::codec::{FramedRead, FramedWrite};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
     Connect,
     Wait(Duration),
@@ -25,11 +24,10 @@ pub enum Action {
     Disconnect,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CameraClient {
     pub camera: Camera,
     pub actions: Vec<Action>,
-    pub reports: Vec<PlateRecord>,
 }
 
 impl From<Camera> for CameraClient {
@@ -37,7 +35,6 @@ impl From<Camera> for CameraClient {
         Self {
             camera,
             actions: Vec::default(),
-            reports: Vec::default(),
         }
     }
 }
@@ -57,21 +54,10 @@ impl CameraClient {
         self
     }
 
-    pub fn append_shuffled_reports(&mut self, rng: &mut ThreadRng) {
-        self.reports.shuffle(rng);
-        self.reports.drain(..).for_each(|r| {
-            self.actions.push(Action::ReportPlate(r));
-            let wait_duration = Duration::from_millis(rng.gen_range(0..1500));
-            self.actions.push(Action::Wait(wait_duration));
-        });
-    }
-
-    pub fn append_reports(&mut self, rng: &mut ThreadRng) {
-        self.reports.drain(..).for_each(|r| {
-            self.actions.push(Action::ReportPlate(r));
-            let wait_duration = Duration::from_millis(rng.gen_range(0..1500));
-            self.actions.push(Action::Wait(wait_duration));
-        });
+    pub fn append_record(&mut self, record: PlateRecord, rng: &mut ThreadRng) {
+        self.actions.push(Action::ReportPlate(record));
+        let wait_duration = Duration::from_millis(rng.gen_range(0..1500));
+        self.actions.push(Action::Wait(wait_duration));
     }
 
     pub async fn run(&self, addr: SocketAddr) -> anyhow::Result<()> {

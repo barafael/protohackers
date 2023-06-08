@@ -67,11 +67,11 @@ where
             .filter(|n| n.as_str() != name)
             .join(", ")
     );
-    println!("{msg}");
+    //println!("{msg}");
     writer.send(msg).await?;
 
     let msg = format!("* {name} has joined the room");
-    println!("{msg}");
+    //println!("{msg}");
     tx.send(msg)?;
     let mut rx = rx.resubscribe();
 
@@ -84,7 +84,7 @@ where
                 }
             }
             Ok(msg) = rx.recv() => {
-                println!("Received {msg}");
+                //println!("Received {msg}");
                 if !msg.starts_with(&format!("[{name}]")) {
                     writer.send(msg).await?;
                 }
@@ -104,20 +104,20 @@ fn handle_client_message(
     match msg {
         Some(Ok(msg)) => {
             let msg = format!("[{name}] {msg}");
-            println!("{msg}");
+            //println!("{msg}");
             tx.send(msg)?;
             Ok(ControlFlow::Continue(()))
         }
         Some(Err(e)) => {
             let msg = format!("* {name} has left the room, with error {e:#?}");
-            println!("{msg}");
+            //println!("{msg}");
             tx.send(msg)?;
             users.0.lock().unwrap().remove(addr);
             Ok(ControlFlow::Break(()))
         }
         None => {
             let msg = format!("* {name} has left the room");
-            println!("{msg}");
+            //println!("{msg}");
             tx.send(msg)?;
             users.0.lock().unwrap().remove(addr);
             Ok(ControlFlow::Break(()))

@@ -16,3 +16,6 @@ members = [
     "time_price",
     "unusual_db",
 ]
+
+# [profile.release]
+# debug = true
