@@ -21,7 +21,7 @@ mod test {
     #[test]
     fn means() {
         assert_eq!([1, 2, 3, 4, 5].iter().mean(), 3.);
-        assert_eq!(vec![1, 2, 3, 4, 5].iter().mean(), 3.);
+        assert_eq!([1, 2, 3, 4, 5].iter().mean(), 3.);
         assert_eq!(vec![1, 2, 3, 4, 5].into_iter().mean(), 3.);
     }
 }

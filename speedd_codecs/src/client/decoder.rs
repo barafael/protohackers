@@ -97,7 +97,7 @@ mod test {
             ][..],
         );
 
-        let mut decoder = MessageDecoder::default();
+        let mut decoder = MessageDecoder;
         let first = decoder.decode(&mut BytesMut::from(&input[0..5][..]));
         assert!(matches!(first, Ok(None)));
 
@@ -113,7 +113,7 @@ mod test {
     fn dispatcher_example() {
         let mut input = BytesMut::from(&[0x81, 0x03, 0x00, 0x42, 0x01, 0x70, 0x13, 0x88][..]);
 
-        let mut decoder = MessageDecoder::default();
+        let mut decoder = MessageDecoder;
         let first = decoder.decode(&mut BytesMut::from(&input[0..5][..]));
         assert!(matches!(first, Ok(None)));
 

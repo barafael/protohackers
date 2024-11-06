@@ -27,7 +27,7 @@ mod test {
             .build();
         let mut client_1 = tokio_util::codec::FramedRead::new(
             client_1,
-            crate::client::decoder::MessageDecoder::default(),
+            crate::client::decoder::MessageDecoder,
         );
 
         let client_2 = Builder::new()
@@ -36,7 +36,7 @@ mod test {
             .build();
         let mut client_2 = tokio_util::codec::FramedRead::new(
             client_2,
-            crate::client::decoder::MessageDecoder::default(),
+            crate::client::decoder::MessageDecoder,
         );
 
         assert_eq!(

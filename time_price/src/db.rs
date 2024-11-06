@@ -28,7 +28,7 @@ mod test {
         db.insert(1, 2);
         db.insert(2, 3);
         db.insert(0, 4);
-        assert_eq!(3, db.query(0, 4) as i32);
-        assert_eq!(0, db.query(10, 9) as i32);
+        assert_eq!(3, { db.query(0, 4) });
+        assert_eq!(0, { db.query(10, 9) });
     }
 }

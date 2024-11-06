@@ -73,9 +73,9 @@ mod test {
             0x0f, 0x42, 0x40, 0x04, 0xd3, 0x00, 0x0f, 0x42, 0x7c, 0x17, 0x70,
         ];
 
-        let mut decoder = MessageDecoder::default();
+        let mut decoder = MessageDecoder;
         let none = decoder
-            .decode(&mut BytesMut::from(&bytes.clone()[0..5][..]))
+            .decode(&mut BytesMut::from(&bytes[0..5][..]))
             .unwrap();
         assert!(none.is_none());
         let message = decoder

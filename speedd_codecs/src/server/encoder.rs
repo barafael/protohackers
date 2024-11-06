@@ -60,7 +60,7 @@ mod test {
             speed: 6000,
         });
         let mut buffer = BytesMut::with_capacity(5);
-        let mut encoder = MessageEncoder::default();
+        let mut encoder = MessageEncoder;
         encoder.encode(ticket, &mut buffer).unwrap();
         let expected = [
             0x21, 0x07, 0x52, 0x45, 0x30, 0x35, 0x42, 0x4b, 0x47, 0x01, 0x70, 0x04, 0xd2, 0x00,

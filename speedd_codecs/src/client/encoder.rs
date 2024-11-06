@@ -51,7 +51,7 @@ mod test {
     #[test]
     fn encodes_example() {
         let msg = Message::IAmDispatcher(vec![66]);
-        let mut encoder = MessageEncoder::default();
+        let mut encoder = MessageEncoder;
 
         let mut buffer = BytesMut::with_capacity(2);
         encoder.encode(msg, &mut buffer).unwrap();

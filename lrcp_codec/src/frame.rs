@@ -83,7 +83,7 @@ mod test {
     #[test]
     fn parses_connect() {
         let string = r"/connect/123/";
-        let frame = Frame::from_str(&string).unwrap();
+        let frame = Frame::from_str(string).unwrap();
         assert_eq!(Frame::Connect(123), frame);
     }
 
@@ -91,7 +91,7 @@ mod test {
     fn parses_data() {
         let string = r"/data/1234567/0/hello
 /";
-        let frame = Frame::from_str(&string).unwrap();
+        let frame = Frame::from_str(string).unwrap();
         assert_eq!(
             Frame::Data {
                 session: 1234567,
@@ -105,7 +105,7 @@ mod test {
     #[test]
     fn parses_single_slash_message() {
         let string = r"/data/1234568/0/\//";
-        let frame = Frame::from_str(&string).unwrap();
+        let frame = Frame::from_str(string).unwrap();
         assert_eq!(
             Frame::Data {
                 session: 1234568,
@@ -121,7 +121,7 @@ mod test {
         let string = r"/data/1981800348/0/foo\/bar\/baz
 foo\\bar\\baz
 /";
-        let frame = Frame::from_str(&string).unwrap();
+        let frame = Frame::from_str(string).unwrap();
         assert_eq!(
             frame,
             Frame::Data {
