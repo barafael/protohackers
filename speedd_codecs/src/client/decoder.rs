@@ -19,7 +19,7 @@ impl Decoder for MessageDecoder {
                     return Ok(None);
                 };
                 if src.remaining() >= 1 + 1 + *len as usize + 4 {
-                    let bytes = std::str::from_utf8(&src[2..2 + *len as usize]).unwrap();
+                    let bytes = std::str::from_utf8(&src[2..2 + *len as usize])?;
                     let timestamp = u32::from_be_bytes(
                         src[2 + *len as usize..2 + *len as usize + 4]
                             .try_into()
@@ -40,8 +40,7 @@ impl Decoder for MessageDecoder {
                 if src.remaining() >= 1 + 4 {
                     src.advance(1); // tag byte
                     let deciseconds = src.get_u32();
-                    let millis = deciseconds * 100;
-                    let dur = Duration::from_millis(millis as u64);
+                    let dur = Duration::from_millis(u64::from(deciseconds) * 100);
                     Ok(Some(Self::Item::WantHeartbeat(dur)))
                 } else {
                     Ok(None)
@@ -120,5 +119,18 @@ mod test {
         let second = decoder.decode(&mut input).unwrap().unwrap();
         let expected = client::Message::IAmDispatcher(vec![66, 368, 5000]);
         assert_eq!(expected, second);
+    }
+
+    #[test]
+    fn rejects_plates_which_are_not_text() {
+        let mut input = BytesMut::from(&[0x20, 0x02, 0xff, 0xfe, 0x00, 0x00, 0x00, 0x01][..]);
+        assert!(MessageDecoder.decode(&mut input).is_err());
+    }
+
+    #[test]
+    fn decodes_the_longest_heartbeat() {
+        let mut input = BytesMut::from(&[0x40, 0xff, 0xff, 0xff, 0xff][..]);
+        let expected = client::Message::WantHeartbeat(Duration::from_millis(429_496_729_500));
+        assert_eq!(MessageDecoder.decode(&mut input).unwrap(), Some(expected));
     }
 }
