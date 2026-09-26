@@ -88,9 +88,9 @@ where
                     let response = Response::wellformed(prime);
                     writer.write(&response).await?;
                 } else {
+                    // Not an integer, so not prime, but still well-formed.
                     let response = Response::wellformed(false);
                     writer.write(&response).await?;
-                    break;
                 };
             }
             // The client hung up: nothing to answer.
@@ -158,6 +158,20 @@ mod test {
         assert_eq!(responses, [prime(true)]);
 
         assert!(session("").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn non_integers_are_not_prime() {
+        let responses = session(concat!(
+            r#"{"method":"isPrime","number":3.5}"#,
+            "\n",
+            r#"{"method":"isPrime","number":7}"#,
+            "\n",
+        ))
+        .await;
+
+        // Well-formed, so the session goes on.
+        assert_eq!(responses, [prime(false), prime(true)]);
     }
 
     #[tokio::test]
