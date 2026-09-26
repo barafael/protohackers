@@ -182,7 +182,7 @@ impl Collector {
     }
 
     fn day(timestamp: u32) -> u32 {
-        f32::floor(timestamp as f32 / SECONDS_PER_DAY as f32) as u32
+        timestamp / SECONDS_PER_DAY
     }
 }
 
@@ -308,6 +308,13 @@ pub mod test {
         assert!(Collector::days(86_399, 3 * 86_400).eq(0..=3));
         // Every day until the end of time: fast only if not stepping through ~4e9 seconds.
         assert!(Collector::days(0, u32::MAX).eq(0..=49_710));
+    }
+
+    #[test]
+    fn days_end_on_the_last_second() {
+        // f32 cannot tell these apart.
+        assert_eq!(Collector::day(999_993_599), 11_573);
+        assert_eq!(Collector::day(999_993_600), 11_574);
     }
 
     #[test]
