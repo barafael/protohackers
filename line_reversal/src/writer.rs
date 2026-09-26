@@ -1,23 +1,44 @@
 use futures_util::{Sink, SinkExt};
 use lrcp_codec::Frame;
-use std::iter::Iterator;
-use std::{collections::VecDeque, time::Duration};
+use std::time::Duration;
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     sync::mpsc,
     time::{sleep, Instant},
 };
 
+/// How long to wait for an acknowledgement before sending data again.
+const RETRANSMISSION_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How long to wait for the peer before giving up on the session.
+const SESSION_EXPIRY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How much output may await acknowledgement before the writer stops taking more from the application.
+const WINDOW: usize = 10_000;
+
 /// The sending half of a session: sends the application's output to the peer, until acknowledged.
 ///
-/// It *is* its data: the session id, how much data the peer acknowledged, and what is in flight.
+/// It *is* its data: the session id, how much of the output the peer acknowledged, and the output
+/// the peer has yet to acknowledge. All of that is in flight: the writer sends output as soon as the
+/// application produces it, without waiting for earlier output to be acknowledged.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Writer {
     id: u32,
+    /// The largest length the peer acknowledged.
     length: u32,
-    awaiting_ack: Option<Frame>,
-    current_item: Option<Frame>,
-    chunks: VecDeque<String>,
+    /// The output after the first `length` bytes.
+    unacknowledged: String,
+}
+
+/// What an acknowledgement means to the [`Writer`].
+#[derive(Debug, PartialEq, Eq)]
+enum Ack {
+    /// Nothing new: a duplicate, or delayed.
+    Stale,
+    /// Some of the output: the peer is missing the rest.
+    Partial,
+    /// All of the output.
+    Complete,
 }
 
 impl Writer {
@@ -25,9 +46,7 @@ impl Writer {
         Self {
             id,
             length: 0,
-            awaiting_ack: None,
-            current_item: None,
-            chunks: VecDeque::new(),
+            unacknowledged: String::new(),
         }
     }
 
@@ -36,7 +55,7 @@ impl Writer {
     pub async fn event_loop<A, S>(
         mut self,
         mut application: A,
-        mut frames: S,
+        mut peer: S,
         mut inbox: mpsc::Receiver<Frame>,
         reader: mpsc::Sender<Frame>,
     ) -> Self
@@ -46,10 +65,12 @@ impl Writer {
         S::Error: Into<anyhow::Error>,
     {
         if let Err(error) = self
-            .run(&mut application, &mut frames, &mut inbox, &reader)
+            .run(&mut application, &mut peer, &mut inbox, &reader)
             .await
         {
             tracing::warn!(?error, "Writer for session {} failed", self.id);
+            // Without a writer, the session is over.
+            tell(&reader, self.id).await;
         }
         tracing::info!("Exiting writer for session {}", self.id);
         self
@@ -57,122 +78,124 @@ impl Writer {
 
     async fn run<A, S>(
         &mut self,
-        channel: &mut A,
-        writer: &mut S,
-        reader: &mut mpsc::Receiver<Frame>,
-        close: &mpsc::Sender<Frame>,
+        application: &mut A,
+        peer: &mut S,
+        inbox: &mut mpsc::Receiver<Frame>,
+        reader: &mpsc::Sender<Frame>,
     ) -> anyhow::Result<()>
     where
         A: AsyncRead + Unpin,
         S: Sink<Frame> + Unpin,
         S::Error: Into<anyhow::Error>,
     {
-        let session_timer = sleep(Duration::from_secs(60));
-        let repeat_timer = sleep(Duration::from_secs(3));
-        tokio::pin!(session_timer);
-        tokio::pin!(repeat_timer);
+        let retransmission = sleep(RETRANSMISSION_TIMEOUT);
+        let expiry = sleep(SESSION_EXPIRY_TIMEOUT);
+        tokio::pin!(retransmission, expiry);
 
+        // Whether the application may produce more output.
+        let mut open = true;
         let mut buffer = [0u8; 1024];
         loop {
             tokio::select! {
                 // When the peer closes, the application closes as a consequence: that is no reason to close.
                 biased;
 
-                // Receive acknowledgement and close messages
-                msg = reader.recv() => {
-                    let Some(msg) = msg else {
-                        break;
+                frame = inbox.recv() => {
+                    let Some(frame) = frame else {
+                        return Ok(());
                     };
-                    tracing::info!("Resetting session timer"); // Why sometimes twice?
-                    tracing::debug!(?msg);
-                    session_timer.as_mut().reset(Instant::now() + Duration::from_secs(60));
-                    match msg {
-                        Frame::Ack { length, .. } => {
-                            if Some(Frame::Ack { session: self.id, length }) == self.awaiting_ack {
-                                self.length = length;
-                                tracing::info!("Received matching ack! State: {self:?}");
-                                self.current_item = if self.chunks.is_empty() {
-                                    self.awaiting_ack = None;
-                                    None
-                                } else if let Some(data) = self.chunks.pop_front() {
-                                    self.awaiting_ack = Some(Frame::Ack {
-                                        session: self.id,
-                                        length: self.length + data.len() as u32,
-                                    });
-                                    tracing::info!("Waiting for ack: {:?}", self.awaiting_ack);
-                                    let frame = Frame::Data { session: self.id, position: self.length, data };
-                                    Some(frame)
-                                } else {
-                                    self.awaiting_ack = None;
-                                    None
-                                }
+                    tracing::debug!(?frame);
+                    expiry.as_mut().reset(Instant::now() + SESSION_EXPIRY_TIMEOUT);
+                    match frame {
+                        Frame::Ack { length, .. } => match self.on_ack(length) {
+                            Ack::Stale => {}
+                            Ack::Partial => {
+                                self.send_unacknowledged(peer).await?;
+                                retransmission.as_mut().reset(Instant::now() + RETRANSMISSION_TIMEOUT);
                             }
-                            repeat_timer
-                                .as_mut()
-                                .reset(Instant::now() + Duration::from_secs(3));
-                            session_timer
-                                .as_mut()
-                                .reset(Instant::now() + Duration::from_secs(60));
-                        }
-                        Frame::Close(_) => {
-                            break;
-                        }
-                        _ => {}
+                            Ack::Complete if !open => {
+                                tracing::info!("Application closed, ending session {}", self.id);
+                                return self.close(peer, reader).await;
+                            }
+                            Ack::Complete => {}
+                        },
+                        Frame::Close(_) => return Ok(()),
+                        Frame::Connect(_) | Frame::Data { .. } => {}
                     }
                 }
-                // Receive new chunks of data, if not currently sending
-                Ok(len) = channel.read(&mut buffer), if self.current_item.is_none() => {
+                read = application.read(&mut buffer), if open && self.unacknowledged.len() < WINDOW => {
+                    let len = read?;
                     if len == 0 {
-                        tracing::info!("Application channel closed, ending session {}", self.id);
-                        return self.close(writer, close).await;
-                    }
-                    let output = buffer[..len].iter().map(|c| *c as char).collect::<String>();
-                    // Everything sent so far is acknowledged, so the output starts at `self.length`.
-                    let frames = Frame::data(self.id, self.length, &output);
-                    self.chunks.extend(frames.into_iter().filter_map(|frame| match frame {
-                        Frame::Data { data, .. } => Some(data),
-                        _ => None,
-                    }));
-                    let item = self.chunks.pop_front().unwrap();
-                    tracing::debug!(?item);
-                    self.awaiting_ack = Some(Frame::Ack {
-                        session: self.id,
-                        length: self.length + item.len() as u32,
-                    });
-                    let frame = Frame::Data {
-                        session: self.id,
-                        position: self.length,
-                        data: item,
-                    };
-                    self.current_item = Some(frame.clone());
-                    tracing::info!("Sending data {frame:?}");
-                    tracing::info!("Waiting for ack: {:?}", self.awaiting_ack);
-                    writer.send(frame).await.map_err(Into::into)?;
-                    repeat_timer
-                        .as_mut()
-                        .reset(Instant::now() + Duration::from_secs(3));
-                    session_timer
-                        .as_mut()
-                        .reset(Instant::now() + Duration::from_secs(60));
-                }
-                // Repeat sending at specified rate, if currently sending
-                // TODO use time::Interval here?
-                () = &mut repeat_timer, if self.current_item.is_some() => {
-                    if let Some(ref curr) = self.current_item {
-                        tracing::info!("Re-sending {:?}", self.current_item);
-                        writer.send(curr.clone()).await.map_err(Into::into)?;
-                        repeat_timer.as_mut().reset(Instant::now() + Duration::from_secs(3));
+                        // Close once the peer has everything.
+                        open = false;
+                        if self.unacknowledged.is_empty() {
+                            tracing::info!("Application closed, ending session {}", self.id);
+                            return self.close(peer, reader).await;
+                        }
+                    } else {
+                        if self.unacknowledged.is_empty() {
+                            // Now waiting for the peer.
+                            retransmission.as_mut().reset(Instant::now() + RETRANSMISSION_TIMEOUT);
+                            expiry.as_mut().reset(Instant::now() + SESSION_EXPIRY_TIMEOUT);
+                        }
+                        let output = buffer[..len].iter().map(|c| *c as char).collect::<String>();
+                        self.send(peer, &output).await?;
                     }
                 }
-                // Close session if no traffic while currently sending
-                // TODO use time::Interval here?
-                () = &mut session_timer, if self.current_item.is_some() => {
-                    tracing::info!("No traffic, ending session");
-                    return self.close(writer, close).await;
+                () = &mut retransmission, if !self.unacknowledged.is_empty() => {
+                    tracing::info!("Retransmitting for session {}", self.id);
+                    self.send_unacknowledged(peer).await?;
+                    retransmission.as_mut().reset(Instant::now() + RETRANSMISSION_TIMEOUT);
+                }
+                () = &mut expiry, if !self.unacknowledged.is_empty() => {
+                    tracing::info!("No traffic, ending session {}", self.id);
+                    return self.close(peer, reader).await;
                 }
             }
         }
-        Ok(())
+    }
+
+    /// Take note that the peer acknowledged the first `length` bytes of the output.
+    fn on_ack(&mut self, length: u32) -> Ack {
+        let sent = self.length + self.unacknowledged.len() as u32;
+        if length <= self.length || length > sent {
+            return Ack::Stale;
+        }
+        // Lengths count bytes: never cut a character in half.
+        let acknowledged = self
+            .unacknowledged
+            .floor_char_boundary((length - self.length) as usize);
+        self.unacknowledged.drain(..acknowledged);
+        self.length += acknowledged as u32;
+        if self.unacknowledged.is_empty() {
+            Ack::Complete
+        } else {
+            Ack::Partial
+        }
+    }
+
+    /// Send more output.
+    async fn send<S>(&mut self, peer: &mut S, output: &str) -> anyhow::Result<()>
+    where
+        S: Sink<Frame> + Unpin,
+        S::Error: Into<anyhow::Error>,
+    {
+        let position = self.length + self.unacknowledged.len() as u32;
+        self.unacknowledged.push_str(output);
+        send_all(peer, Frame::data(self.id, position, output)).await
+    }
+
+    /// Send all the output the peer has yet to acknowledge, again.
+    async fn send_unacknowledged<S>(&self, peer: &mut S) -> anyhow::Result<()>
+    where
+        S: Sink<Frame> + Unpin,
+        S::Error: Into<anyhow::Error>,
+    {
+        send_all(
+            peer,
+            Frame::data(self.id, self.length, &self.unacknowledged),
+        )
+        .await
     }
 
     /// End the session, telling the session's reader and the peer.
@@ -184,6 +207,17 @@ impl Writer {
         tell(reader, self.id).await;
         peer.send(Frame::Close(self.id)).await.map_err(Into::into)
     }
+}
+
+async fn send_all<S>(peer: &mut S, frames: Vec<Frame>) -> anyhow::Result<()>
+where
+    S: Sink<Frame> + Unpin,
+    S::Error: Into<anyhow::Error>,
+{
+    for frame in frames {
+        peer.send(frame).await.map_err(Into::into)?;
+    }
+    Ok(())
 }
 
 /// Tell the session's reader to close.
@@ -199,6 +233,7 @@ mod test {
     use bytes::BytesMut;
     use futures_util::StreamExt;
     use lrcp_codec::Lrcp;
+    use tokio::time::timeout;
     use tokio_util::codec::Encoder;
 
     fn data(position: u32, data: &str) -> Frame {
@@ -287,6 +322,40 @@ mod test {
                 }
                 inbox.send(ack(received.len() as u32)).await.unwrap();
             }
+            (received, inbox, peer)
+        };
+        let (writer, (received, _inbox, _peer)) = tokio::join!(
+            Writer::with_id(1).event_loop(application, sent, rx, reader),
+            peer,
+        );
+
+        assert_eq!(received.as_bytes(), application);
+        assert_eq!(writer.length, 1001);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sends_output_without_waiting_for_acknowledgements() {
+        let output = format!("{}\n", "x".repeat(2999));
+        let application = output.as_bytes();
+        let (sent, mut peer) = futures::channel::mpsc::unbounded();
+        let (inbox, rx) = mpsc::channel(8);
+        let (reader, _reader_rx) = mpsc::channel(8);
+
+        let peer = async move {
+            // No acknowledgement yet, and no time for a retransmission.
+            let received = timeout(Duration::from_secs(1), async {
+                let mut received = String::new();
+                while received.len() < 3000 {
+                    if let Some(Frame::Data { position, data, .. }) = peer.next().await {
+                        if position as usize == received.len() {
+                            received.push_str(&data);
+                        }
+                    }
+                }
+                received
+            })
+            .await;
+            inbox.send(ack(3000)).await.unwrap();
             (received, inbox)
         };
         let (writer, (received, _inbox)) = tokio::join!(
@@ -294,8 +363,52 @@ mod test {
             peer,
         );
 
-        assert_eq!(received.as_bytes(), application);
-        assert_eq!(writer.length, 1001);
+        assert_eq!(received.unwrap(), output);
+        assert_eq!(writer.length, 3000);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retransmits_what_was_not_acknowledged() {
+        let application = "x".repeat(1500);
+        let application = application.as_bytes();
+        let (sent, mut peer) = futures::channel::mpsc::unbounded();
+        let (inbox, rx) = mpsc::channel(8);
+        let (reader, _reader_rx) = mpsc::channel(8);
+
+        let peer = async move {
+            let start = Instant::now();
+            let mut first = None;
+            let mut end = 0;
+            while end < 1500 {
+                let frame = peer.next().await.unwrap();
+                let Frame::Data { position, data, .. } = frame else {
+                    panic!("{frame:?} is no data frame");
+                };
+                end = position + data.len() as u32;
+                first.get_or_insert(end);
+            }
+            // As if all but the first frame got lost.
+            let first = first.unwrap();
+            inbox.send(ack(first)).await.unwrap();
+            let again = peer.next().await.unwrap();
+            let elapsed = start.elapsed();
+            // Old news is no reason to send anything.
+            inbox.send(ack(first)).await.unwrap();
+            inbox.send(ack(1)).await.unwrap();
+            let quiet = timeout(Duration::from_secs(1), peer.next()).await.is_err();
+            inbox.send(ack(1500)).await.unwrap();
+            (first, again, elapsed, quiet, inbox, peer)
+        };
+        let (writer, (first, again, elapsed, quiet, _inbox, _peer)) = tokio::join!(
+            Writer::with_id(1).event_loop(application, sent, rx, reader),
+            peer,
+        );
+
+        let rest = "x".repeat(1500 - first as usize);
+        assert_eq!(again, data(first, &rest));
+        assert_eq!(elapsed, Duration::ZERO);
+        assert!(quiet);
+        assert_eq!(writer.length, 1500);
     }
 
     #[tokio::test(start_paused = true)]
@@ -350,6 +463,38 @@ mod test {
         // Sent every 3 seconds; at 60 seconds, retransmission and timeout coincide.
         assert!((20..=21).contains(&sent.len()));
         assert!(sent.iter().all(|frame| *frame == data(0, "olleh\n")));
-        assert_eq!(writer.current_item, Some(data(0, "olleh\n")));
+        assert_eq!(writer.unacknowledged, "olleh\n");
+    }
+
+    #[test]
+    fn acknowledgements() {
+        let mut writer = Writer {
+            id: 1,
+            length: 3,
+            unacknowledged: "lo\nwo".to_string(),
+        };
+        assert_eq!(writer.on_ack(3), Ack::Stale);
+        assert_eq!(writer.on_ack(2), Ack::Stale);
+        assert_eq!(writer.on_ack(5), Ack::Partial);
+        assert_eq!(writer.unacknowledged, "\nwo");
+        assert_eq!(writer.on_ack(4), Ack::Stale);
+        assert_eq!(writer.on_ack(8), Ack::Complete);
+        assert_eq!(
+            writer,
+            Writer {
+                length: 8,
+                ..Writer::with_id(1)
+            }
+        );
+    }
+
+    #[test]
+    fn acknowledgements_do_not_split_characters() {
+        let mut writer = Writer {
+            unacknowledged: "é".to_string(),
+            ..Writer::with_id(1)
+        };
+        assert_eq!(writer.on_ack(1), Ack::Partial);
+        assert_eq!(writer.unacknowledged, "é");
     }
 }
