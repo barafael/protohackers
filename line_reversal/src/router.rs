@@ -9,15 +9,19 @@ use tokio::{
     io::{duplex, split},
     select,
     sync::mpsc::{self, error::TrySendError},
-    task::JoinSet,
+    task::{self, JoinSet},
 };
 use tokio_util::sync::{PollSendError, PollSender};
 
 /// Maps a session ID to its socket address.
 pub type Sessions = HashMap<u32, SocketAddr>;
 
-/// The inboxes of one session's reader and writer.
-type Inboxes = [mpsc::Sender<Frame>; 2];
+/// A running session: its task, and the inboxes of its reader and writer.
+#[derive(Debug)]
+struct Handle {
+    task: task::Id,
+    inboxes: [mpsc::Sender<Frame>; 2],
+}
 
 /// Routes incoming frames to their sessions, and answers frames for unknown sessions.
 ///
@@ -39,7 +43,7 @@ impl Router {
     where
         S: Stream<Item = anyhow::Result<(Frame, SocketAddr)>> + Unpin,
     {
-        let mut inboxes = HashMap::<u32, Inboxes>::new();
+        let mut handles = HashMap::<u32, Handle>::new();
         let mut tasks = JoinSet::new();
         loop {
             select! {
@@ -49,7 +53,7 @@ impl Router {
                     };
                     let result = match frame {
                         Ok((frame, addr)) => {
-                            self.on_frame(frame, addr, &outbound, &mut inboxes, &mut tasks).await
+                            self.on_frame(frame, addr, &outbound, &mut handles, &mut tasks).await
                         }
                         Err(e) => {
                             tracing::info!("{e:?}");
@@ -61,12 +65,19 @@ impl Router {
                         break;
                     }
                 }
-                Some(result) = tasks.join_next() => finished(result),
+                Some(result) = tasks.join_next_with_id() => {
+                    let task = match &result {
+                        Ok((task, _)) => *task,
+                        Err(error) => error.id(),
+                    };
+                    finished(result.map(|(_, session)| session));
+                    self.forget(task, &mut handles);
+                }
             }
         }
 
         // Natural shutdown: sessions end when their inboxes close.
-        drop(inboxes);
+        drop(handles);
         while let Some(result) = tasks.join_next().await {
             finished(result);
         }
@@ -78,20 +89,20 @@ impl Router {
         frame: Frame,
         addr: SocketAddr,
         outbound: &mpsc::Sender<(Frame, SocketAddr)>,
-        inboxes: &mut HashMap<u32, Inboxes>,
+        handles: &mut HashMap<u32, Handle>,
         tasks: &mut JoinSet<Session>,
     ) -> anyhow::Result<()> {
         match frame {
             Frame::Connect(session) => {
                 // Does the session already exist?
                 match self.sessions.entry(session) {
-                    Entry::Occupied(_) => forward(inboxes, Frame::Connect(session)),
+                    Entry::Occupied(_) => forward(handles, Frame::Connect(session)),
                     Entry::Vacant(entry) => {
                         tracing::info!("Opening new session with id {session}");
                         entry.insert(addr);
                         let ack = Frame::Ack { session, length: 0 };
                         outbound.send((ack, addr)).await?;
-                        inboxes.insert(session, spawn_session(session, addr, outbound, tasks));
+                        handles.insert(session, spawn_session(session, addr, outbound, tasks));
                     }
                 }
             }
@@ -101,8 +112,8 @@ impl Router {
                 } else {
                     tracing::info!("Session with id {session} does not exist, ignoring close");
                 }
-                forward(inboxes, Frame::Close(session));
-                inboxes.remove(&session);
+                forward(handles, Frame::Close(session));
+                handles.remove(&session);
                 outbound.send((Frame::Close(session), addr)).await?;
             }
             Frame::Data {
@@ -112,7 +123,7 @@ impl Router {
             } => {
                 if self.sessions.contains_key(&session) {
                     forward(
-                        inboxes,
+                        handles,
                         Frame::Data {
                             session,
                             position,
@@ -128,7 +139,7 @@ impl Router {
             }
             Frame::Ack { session, length } => {
                 if self.sessions.contains_key(&session) {
-                    forward(inboxes, Frame::Ack { session, length });
+                    forward(handles, Frame::Ack { session, length });
                 } else {
                     tracing::info!("Ignoring stray ack for session {session} with length {length} (no such session)");
                     outbound.send((Frame::Close(session), addr)).await?;
@@ -137,6 +148,21 @@ impl Router {
         }
         Ok(())
     }
+
+    /// Forget the session which ran as `task`, now that it has ended.
+    ///
+    /// Unless the session was closed, and its id reused, already.
+    fn forget(&mut self, task: task::Id, handles: &mut HashMap<u32, Handle>) {
+        let Some(session) = handles
+            .iter()
+            .find_map(|(session, handle)| (handle.task == task).then_some(*session))
+        else {
+            return;
+        };
+        tracing::info!("Session with id {session} has ended");
+        handles.remove(&session);
+        self.sessions.remove(&session);
+    }
 }
 
 /// Hand a frame to its session's reader and writer, without waiting:
@@ -144,9 +170,13 @@ impl Router {
 ///
 /// Both halves get the frame, because the writer restarts its session timeout on any frame from the peer.
 /// Each owns its copy.
-fn forward(inboxes: &HashMap<u32, Inboxes>, frame: Frame) {
+fn forward(handles: &HashMap<u32, Handle>, frame: Frame) {
     let session = frame.session_id();
-    let Some([reader, writer]) = inboxes.get(&session) else {
+    let Some(Handle {
+        inboxes: [reader, writer],
+        ..
+    }) = handles.get(&session)
+    else {
         return;
     };
     deliver(reader, frame.clone());
@@ -171,7 +201,7 @@ fn spawn_session(
     addr: SocketAddr,
     outbound: &mpsc::Sender<(Frame, SocketAddr)>,
     tasks: &mut JoinSet<Session>,
-) -> Inboxes {
+) -> Handle {
     let (reader_tx, reader_rx) = mpsc::channel(64);
     let (writer_tx, writer_rx) = mpsc::channel(64);
 
@@ -186,7 +216,7 @@ fn spawn_session(
     let reader = Reader::with_id(id).event_loop(write, to_peer(), reader_rx);
     let writer = Writer::with_id(id).event_loop(read, to_peer(), writer_rx, reader_tx.clone());
     let application = reverse_lines(application);
-    tasks.spawn(async move {
+    let task = tasks.spawn(async move {
         let (reader, application, writer) = tokio::join!(reader, application, writer);
         Session {
             reader,
@@ -195,7 +225,10 @@ fn spawn_session(
         }
     });
 
-    [reader_tx, writer_tx]
+    Handle {
+        task: task.id(),
+        inboxes: [reader_tx, writer_tx],
+    }
 }
 
 /// What a session leaves behind.
@@ -226,6 +259,8 @@ fn finished(result: Result<Session, tokio::task::JoinError>) {
 mod test {
     use super::*;
     use futures_util::stream;
+    use std::time::Duration;
+    use tokio::time::{sleep, timeout};
 
     fn from(port: u16, frame: Frame) -> anyhow::Result<(Frame, SocketAddr)> {
         Ok((frame, addr(port)))
@@ -308,6 +343,77 @@ mod test {
             ]
         );
         assert_eq!(router, Router::default());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn forgets_sessions_which_end() {
+        let (peer, frames) = futures::channel::mpsc::unbounded();
+        let (outbound, mut outbound_rx) = mpsc::channel::<(Frame, SocketAddr)>(8);
+        let send = |frame: Frame| peer.unbounded_send(from(1, frame)).unwrap();
+
+        let conversation = async {
+            send(Frame::Connect(7));
+            send(Frame::Data {
+                session: 7,
+                position: 0,
+                data: "hello\n".to_string(),
+            });
+            // Never acknowledged, the session expires, and tells the peer.
+            let closed = timeout(Duration::from_secs(61), async {
+                while outbound_rx.recv().await.unwrap().0 != Frame::Close(7) {}
+            })
+            .await;
+
+            // Some time for the session to end, then it is unknown.
+            sleep(Duration::from_secs(1)).await;
+            send(Frame::Ack {
+                session: 7,
+                length: 6,
+            });
+            let unknown = timeout(Duration::from_secs(1), outbound_rx.recv()).await;
+            peer.close_channel();
+            (closed, unknown)
+        };
+        let (router, (closed, unknown)) =
+            tokio::join!(Router::default().event_loop(frames, outbound), conversation);
+
+        assert!(closed.is_ok(), "The session did not tell the peer");
+        assert_eq!(unknown.unwrap(), Some((Frame::Close(7), addr(1))));
+        assert_eq!(router, Router::default());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reused_id_outlives_its_predecessor() {
+        let (peer, frames) = futures::channel::mpsc::unbounded();
+        let (outbound, mut outbound_rx) = mpsc::channel::<(Frame, SocketAddr)>(8);
+        let send = |frame: Frame| peer.unbounded_send(from(1, frame)).unwrap();
+
+        let conversation = async {
+            send(Frame::Connect(7));
+            send(Frame::Close(7));
+            send(Frame::Connect(7));
+            let mut answers = Vec::new();
+            for _ in 0..3 {
+                answers.push(outbound_rx.recv().await.unwrap().0);
+            }
+
+            // Some time for the first session to end, then the second one is still there.
+            sleep(Duration::from_secs(1)).await;
+            send(Frame::Data {
+                session: 7,
+                position: 0,
+                data: "a".to_string(),
+            });
+            answers.push(outbound_rx.recv().await.unwrap().0);
+            peer.close_channel();
+            answers
+        };
+        let (router, answers) =
+            tokio::join!(Router::default().event_loop(frames, outbound), conversation);
+
+        let ack = |length| Frame::Ack { session: 7, length };
+        assert_eq!(answers, [ack(0), Frame::Close(7), ack(0), ack(1)]);
+        assert_eq!(router.sessions, Sessions::from([(7, addr(1))]));
     }
 
     /// The example session from the problem statement, without a socket.
