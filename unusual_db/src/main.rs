@@ -1,55 +1,59 @@
 use crate::message::Message;
 use db::Store;
+use futures::{sink, stream, Sink, Stream};
 use std::str::FromStr;
-use std::{net::SocketAddr, sync::Arc};
+use std::{io, net::SocketAddr, sync::Arc};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
 
 mod db;
 mod message;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut store = Store::default();
-    store
-        .0
-        .insert("version".to_string(), env!("CARGO_PKG_NAME").to_string());
     let socket = UdpSocket::bind("0.0.0.0:8000".parse::<SocketAddr>().unwrap()).await?;
-    let receiver = Arc::new(socket);
-    let sender = receiver.clone();
-    let (tx, mut rx) = mpsc::channel::<(Vec<u8>, SocketAddr)>(1_000);
+    let socket = Arc::new(socket);
 
-    tokio::spawn(async move {
-        while let Some((bytes, addr)) = rx.recv().await {
-            let len = sender.send_to(&bytes, &addr).await.unwrap();
-            println!("{len:?} bytes sent");
-        }
-    });
+    let requests = requests(socket.clone());
+    let responses = responses(socket);
+    tokio::pin!(requests, responses);
 
-    let mut buf = [0; 1024];
-    loop {
-        let (len, addr) = receiver.recv_from(&mut buf).await?;
-        let data = String::from_utf8(buf[..len].to_vec())?;
-        match Message::from_str(&data) {
-            Ok(m) => match m {
-                Message::Insert { key, value } => {
-                    if key != "version" {
-                        println!("Insert value: {key} -> {value}");
-                        store.0.insert(key, value);
-                    }
+    Store::new().event_loop(requests, responses).await;
+    Ok(())
+}
+
+/// The datagrams arriving at `socket`, as messages.
+///
+/// Not a `UdpFramed`: a decoder cannot tell an empty datagram (a query for the empty key) from no datagram.
+fn requests(socket: Arc<UdpSocket>) -> impl Stream<Item = (Message, SocketAddr)> {
+    stream::unfold(socket, |socket| async move {
+        let mut buf = [0; 1024];
+        loop {
+            let (len, addr) = match socket.recv_from(&mut buf).await {
+                Ok(received) => received,
+                Err(e) => {
+                    println!("Failed to receive: {e:#?}");
+                    return None;
                 }
-                Message::Query(key) => {
-                    let value = store.0.get(&key);
-                    println!("Retrieved value: {value:#?}");
-                    if let Some(v) = value {
-                        let response = format!("{key}={v}");
-                        tx.send((response.as_bytes().to_vec(), addr)).await?;
-                    }
-                }
-            },
-            Err(e) => {
-                println!("Failed to parse message: {e:#?}");
+            };
+            let message = std::str::from_utf8(&buf[..len])
+                .map_err(anyhow::Error::from)
+                .and_then(Message::from_str);
+            match message {
+                Ok(message) => return Some(((message, addr), socket)),
+                Err(e) => println!("Failed to parse message: {e:#?}"),
             }
         }
-    }
+    })
+}
+
+/// Sends each response as a datagram from `socket`.
+fn responses(socket: Arc<UdpSocket>) -> impl Sink<(String, SocketAddr), Error = io::Error> {
+    sink::unfold(
+        socket,
+        |socket, (response, addr): (String, SocketAddr)| async move {
+            let len = socket.send_to(response.as_bytes(), addr).await?;
+            println!("{len:?} bytes sent");
+            Ok(socket)
+        },
+    )
 }
