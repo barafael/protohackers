@@ -1,6 +1,5 @@
 use futures_util::{Sink, SinkExt};
 use lrcp_codec::Frame;
-use std::sync::Arc;
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     sync::mpsc,
@@ -24,7 +23,7 @@ impl Reader {
         mut self,
         mut application: A,
         mut frames: S,
-        mut inbox: mpsc::Receiver<Arc<Frame>>,
+        mut inbox: mpsc::Receiver<Frame>,
     ) -> Self
     where
         A: AsyncWrite + Unpin,
@@ -42,7 +41,7 @@ impl Reader {
         &mut self,
         channel: &mut A,
         writer: &mut S,
-        reader: &mut mpsc::Receiver<Arc<Frame>>,
+        reader: &mut mpsc::Receiver<Frame>,
     ) -> anyhow::Result<()>
     where
         A: AsyncWrite + Unpin,
@@ -50,7 +49,7 @@ impl Reader {
         S::Error: Into<anyhow::Error>,
     {
         while let Some(msg) = reader.recv().await {
-            match *msg {
+            match msg {
                 Frame::Connect(_) => {
                     tracing::info!(
                         "Sending repeated ACK for existing session (id: {})",
@@ -61,10 +60,8 @@ impl Reader {
                 Frame::Ack { .. } => {
                     // Don't care about Ack in reader
                 }
-                Frame::Data {
-                    position, ref data, ..
-                } => {
-                    let frame = self.handle_data(position, data, channel).await?;
+                Frame::Data { position, data, .. } => {
+                    let frame = self.handle_data(position, &data, channel).await?;
                     writer.send(frame).await.map_err(Into::into)?;
                 }
                 Frame::Close(id) => {
@@ -125,12 +122,12 @@ impl Reader {
 mod test {
     use super::*;
 
-    fn data(position: u32, data: &str) -> Arc<Frame> {
-        Arc::new(Frame::Data {
+    fn data(position: u32, data: &str) -> Frame {
+        Frame::Data {
             session: 1,
             position,
             data: data.to_string(),
-        })
+        }
     }
 
     fn ack(length: u32) -> Frame {
@@ -144,8 +141,8 @@ mod test {
             data(0, "hello\n"),
             data(0, "hello\n"),
             data(10, "from the future\n"),
-            Arc::new(Frame::Connect(1)),
-            Arc::new(ack(3)),
+            Frame::Connect(1),
+            ack(3),
             data(6, "world\n"),
         ] {
             tx.send(frame).await.unwrap();
@@ -168,7 +165,7 @@ mod test {
     #[tokio::test]
     async fn stops_at_close() {
         let (tx, rx) = mpsc::channel(8);
-        for frame in [data(0, "a\n"), Arc::new(Frame::Close(1)), data(2, "b\n")] {
+        for frame in [data(0, "a\n"), Frame::Close(1), data(2, "b\n")] {
             tx.send(frame).await.unwrap();
         }
 

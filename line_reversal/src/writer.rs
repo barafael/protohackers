@@ -2,7 +2,7 @@ use futures_util::{Sink, SinkExt};
 use itertools::Itertools;
 use lrcp_codec::Frame;
 use std::iter::Iterator;
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::{collections::VecDeque, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     sync::mpsc,
@@ -38,8 +38,8 @@ impl Writer {
         mut self,
         mut application: A,
         mut frames: S,
-        mut inbox: mpsc::Receiver<Arc<Frame>>,
-        reader: mpsc::Sender<Arc<Frame>>,
+        mut inbox: mpsc::Receiver<Frame>,
+        reader: mpsc::Sender<Frame>,
     ) -> Self
     where
         A: AsyncRead + Unpin,
@@ -60,8 +60,8 @@ impl Writer {
         &mut self,
         channel: &mut A,
         writer: &mut S,
-        reader: &mut mpsc::Receiver<Arc<Frame>>,
-        close: &mpsc::Sender<Arc<Frame>>,
+        reader: &mut mpsc::Receiver<Frame>,
+        close: &mpsc::Sender<Frame>,
     ) -> anyhow::Result<()>
     where
         A: AsyncRead + Unpin,
@@ -84,7 +84,7 @@ impl Writer {
                     tracing::info!("Resetting session timer"); // Why sometimes twice?
                     tracing::debug!(?msg);
                     session_timer.as_mut().reset(Instant::now() + Duration::from_secs(60));
-                    match *msg {
+                    match msg {
                         Frame::Ack { length, .. } => {
                             if Some(Frame::Ack { session: self.id, length }) == self.awaiting_ack {
                                 self.length = length;
@@ -172,8 +172,8 @@ impl Writer {
 }
 
 /// Tell the session's reader to close.
-async fn tell(reader: &mpsc::Sender<Arc<Frame>>, id: u32) {
-    if reader.send(Arc::new(Frame::Close(id))).await.is_err() {
+async fn tell(reader: &mpsc::Sender<Frame>, id: u32) {
+    if reader.send(Frame::Close(id)).await.is_err() {
         tracing::info!("Reader for session {id} is already gone");
     }
 }
@@ -191,8 +191,8 @@ mod test {
         }
     }
 
-    fn ack(length: u32) -> Arc<Frame> {
-        Arc::new(Frame::Ack { session: 1, length })
+    fn ack(length: u32) -> Frame {
+        Frame::Ack { session: 1, length }
     }
 
     #[tokio::test]
@@ -214,7 +214,7 @@ mod test {
         );
 
         assert_eq!(frame, Some(data(0, "olleh\n")));
-        assert_eq!(*reader_rx.recv().await.unwrap(), Frame::Close(1));
+        assert_eq!(reader_rx.recv().await.unwrap(), Frame::Close(1));
         assert_eq!(
             writer,
             Writer {
@@ -263,7 +263,7 @@ mod test {
             .await;
 
         assert_eq!(start.elapsed(), Duration::from_secs(60));
-        assert_eq!(*reader_rx.recv().await.unwrap(), Frame::Close(1));
+        assert_eq!(reader_rx.recv().await.unwrap(), Frame::Close(1));
         // Sent every 3 seconds; at 60 seconds, retransmission and timeout coincide.
         assert!((20..=21).contains(&sent.len()));
         assert!(sent.iter().all(|frame| *frame == data(0, "olleh\n")));

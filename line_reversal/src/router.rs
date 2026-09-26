@@ -4,7 +4,6 @@ use lrcp_codec::Frame;
 use std::{
     collections::{hash_map::Entry, HashMap},
     net::SocketAddr,
-    sync::Arc,
 };
 use tokio::{
     io::{duplex, split},
@@ -18,7 +17,7 @@ use tokio_util::sync::{PollSendError, PollSender};
 pub type Sessions = HashMap<u32, SocketAddr>;
 
 /// The inboxes of one session's reader and writer.
-type Inboxes = [mpsc::Sender<Arc<Frame>>; 2];
+type Inboxes = [mpsc::Sender<Frame>; 2];
 
 /// Routes incoming frames to their sessions, and answers frames for unknown sessions.
 ///
@@ -142,21 +141,26 @@ impl Router {
 
 /// Hand a frame to its session's reader and writer, without waiting:
 /// a session which does not keep up loses the frame, as if the datagram had been lost.
+///
+/// Both halves get the frame, because the writer restarts its session timeout on any frame from the peer.
+/// Each owns its copy.
 fn forward(inboxes: &HashMap<u32, Inboxes>, frame: Frame) {
     let session = frame.session_id();
-    let Some(inboxes) = inboxes.get(&session) else {
+    let Some([reader, writer]) = inboxes.get(&session) else {
         return;
     };
-    let frame = Arc::new(frame);
-    for inbox in inboxes {
-        match inbox.try_send(frame.clone()) {
-            Ok(()) => {}
-            Err(TrySendError::Full(frame)) => {
-                tracing::info!("Session {session} is busy, dropping {frame:?}");
-            }
-            Err(TrySendError::Closed(frame)) => {
-                tracing::info!("Session {session} has ended, dropping {frame:?}");
-            }
+    deliver(reader, frame.clone());
+    deliver(writer, frame);
+}
+
+fn deliver(inbox: &mpsc::Sender<Frame>, frame: Frame) {
+    match inbox.try_send(frame) {
+        Ok(()) => {}
+        Err(TrySendError::Full(frame)) => {
+            tracing::info!("Session is busy, dropping {frame:?}");
+        }
+        Err(TrySendError::Closed(frame)) => {
+            tracing::info!("Session has ended, dropping {frame:?}");
         }
     }
 }
