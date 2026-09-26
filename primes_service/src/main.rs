@@ -93,11 +93,8 @@ where
                     break;
                 };
             }
-            Ok(None) => {
-                let response = Response::malformed("None");
-                writer.write(&response).await?;
-                break;
-            }
+            // The client hung up: nothing to answer.
+            Ok(None) => break,
             Err(e) => {
                 let response = Response::malformed(&format!("{:#?}", e.kind()));
                 writer.write(&response).await?;
@@ -153,6 +150,14 @@ mod test {
                 serde_json::json!({"method": "Invalid method", "prime": false}),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn stops_silently_at_end_of_input() {
+        let responses = session(concat!(r#"{"method":"isPrime","number":7}"#, "\n")).await;
+        assert_eq!(responses, [prime(true)]);
+
+        assert!(session("").await.is_empty());
     }
 
     #[tokio::test]
