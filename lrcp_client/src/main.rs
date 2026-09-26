@@ -22,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
     let (mut sink, mut stream) = framed.split();
 
     // reader task
-    tokio::task::spawn(async move {
+    let printer = tokio::spawn(async move {
         while let Some(Ok(msg)) = stream.next().await {
             println!("{msg:?}");
         }
@@ -75,6 +75,14 @@ async fn main() -> anyhow::Result<()> {
             Err(e) => {
                 anyhow::bail!("{e:?}");
             }
+        }
+    }
+
+    // UDP has no hang-up: stop printing, without swallowing a panic of the printer.
+    printer.abort();
+    if let Err(error) = printer.await {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
         }
     }
     Ok(())

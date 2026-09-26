@@ -178,9 +178,15 @@ mod test {
         tx.send(Message::Leave { id: addr(2) }).await.unwrap();
         drop(tx);
 
-        Room::default().event_loop(rx).await;
+        let room = Room::default().event_loop(rx).await;
 
         assert_eq!(drain(inbox).await, ["* The room contains: "]);
+        assert_eq!(
+            room,
+            Room {
+                members: BTreeMap::from([(addr(1), "alice".to_string())])
+            }
+        );
     }
 
     #[tokio::test]
@@ -204,9 +210,10 @@ mod test {
         }
         drop(tx);
 
-        Room::default().event_loop(rx).await;
+        let room = Room::default().event_loop(rx).await;
 
-        // The join announcement did not fit into alice's outbox.
+        // The join announcement did not fit into alice's outbox, but she is still a member.
         assert_eq!(drain(alice_inbox).await, ["* The room contains: "]);
+        assert_eq!(room.members.values().collect::<Vec<_>>(), ["alice", "bob"]);
     }
 }

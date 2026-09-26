@@ -239,7 +239,7 @@ mod test {
             inbox.send(ack(6)).await.unwrap();
             (first, second, elapsed)
         };
-        let (_, (first, second, elapsed)) = tokio::join!(
+        let (writer, (first, second, elapsed)) = tokio::join!(
             Writer::with_id(1).event_loop(application, sent, rx, reader),
             peer,
         );
@@ -247,6 +247,13 @@ mod test {
         assert_eq!(first, Some(data(0, "olleh\n")));
         assert_eq!(second, first);
         assert_eq!(elapsed, Duration::from_secs(3));
+        assert_eq!(
+            writer,
+            Writer {
+                length: 6,
+                ..Writer::with_id(1)
+            }
+        );
     }
 
     #[tokio::test(start_paused = true)]

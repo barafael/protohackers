@@ -2,10 +2,15 @@
 
 use crate::client::Client;
 use crate::collector::Collector;
+use anyhow::Context;
 use speedd_codecs::client::decoder::MessageDecoder;
 use speedd_codecs::server::encoder::MessageEncoder;
-use std::env;
-use tokio::{net::TcpListener, sync::mpsc};
+use std::{env, net::SocketAddr};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::mpsc,
+    task::JoinSet,
+};
 use tokio_util::codec::{FramedRead, FramedWrite};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
@@ -36,15 +41,47 @@ async fn main() -> anyhow::Result<()> {
     //std::process::exit(0);
     //});
 
-    tokio::spawn(Collector::default().event_loop(collector_rx));
+    let mut collector = tokio::spawn(Collector::default().event_loop(collector_rx));
+    let mut clients = JoinSet::new();
 
-    while let Ok((inbound, addr)) = listener.accept().await {
-        tracing::info!("Accepted connection from {addr}");
-        let (reader, writer) = inbound.into_split();
-        let reader = FramedRead::new(reader, MessageDecoder);
-        let writer = FramedWrite::new(writer, MessageEncoder);
-        tokio::spawn(Client::default().event_loop(reader, writer, collector_tx.clone()));
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (inbound, addr) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        tracing::error!(?error, "Failed to accept");
+                        break;
+                    }
+                };
+                tracing::info!("Accepted connection from {addr}");
+                clients.spawn(serve(inbound, addr, collector_tx.clone()));
+            }
+            Some(finished) = clients.join_next() => match finished {
+                Ok((addr, client)) => tracing::info!(%addr, ?client, "Client left"),
+                Err(error) => tracing::error!(?error, "Client task failed"),
+            },
+            finished = &mut collector => {
+                // This loop holds a sender, so the collector only stops if it panics.
+                let collector = finished.context("Collector failed")?;
+                anyhow::bail!("Collector stopped with {collector:?}");
+            }
+        }
     }
 
     Ok(())
+}
+
+async fn serve(
+    inbound: TcpStream,
+    addr: SocketAddr,
+    collector: mpsc::Sender<collector::Message>,
+) -> (SocketAddr, Client) {
+    let (reader, writer) = inbound.into_split();
+    let reader = FramedRead::new(reader, MessageDecoder);
+    let writer = FramedWrite::new(writer, MessageEncoder);
+    let client = Client::default()
+        .event_loop(reader, writer, collector)
+        .await;
+    (addr, client)
 }
