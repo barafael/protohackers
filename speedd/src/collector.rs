@@ -7,68 +7,87 @@ use speedd_codecs::{
 use std::collections::{BTreeMap, HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
 
+/// A message for the [`Collector`].
+#[derive(Debug)]
+pub enum Message {
+    /// A camera observed a plate.
+    Plate { record: PlateRecord, camera: Camera },
+
+    /// A dispatcher wants to receive the tickets for a road.
+    Subscribe {
+        road: Road,
+        callback: oneshot::Sender<mpmc::Receiver<TicketRecord>>,
+    },
+}
+
 /// Keeps records of the samples taken, such as observed speed measurements, ticketed days, and speed limits.
-/// Manages a map of roads to mpmc (tx, rx) pairs which transport dispatched tickets.
+///
+/// The collector *is* this data. The ticket queues are runtime resources, so they belong to the event loop:
+/// one mpmc (tx, rx) pair per road.
 /// The rx is kept for cloning it into new dispatchers which register for a specific road.
 /// The tx is used to dispatch tickets, making use of the work-stealing behaviour of the mpmc channel:
 /// if there are no dispatchers for a given road, the mpmc channel acts as a temporary queue, and
 /// if there are one or more registered dispatchers, only one of them gets the ticket.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Collector {
     records: HashMap<String, HashMap<Road, BTreeMap<Timestamp, Mile>>>,
     ticketed_days: HashMap<String, HashSet<u32>>,
     limits: HashMap<Road, Limit>,
-    dispatchers: HashMap<Road, (mpmc::Sender<TicketRecord>, mpmc::Receiver<TicketRecord>)>,
 }
 
-impl Collector {
-    pub fn new() -> Self {
-        Self::default()
-    }
+type TicketQueue = (mpmc::Sender<TicketRecord>, mpmc::Receiver<TicketRecord>);
 
-    pub async fn run(
-        mut self,
-        mut reporting: mpsc::Receiver<(PlateRecord, Camera)>,
-        mut dispatcher_subscription: mpsc::Receiver<(
-            Road,
-            oneshot::Sender<mpmc::Receiver<TicketRecord>>,
-        )>,
-    ) -> anyhow::Result<()> {
+impl Collector {
+    pub async fn event_loop(mut self, mut messages: mpsc::Receiver<Message>) -> Self {
         tracing::info!("Starting Collector loop");
-        loop {
-            tokio::select! {
-                Some((record, camera)) = reporting.recv() => {
+        let mut queues = HashMap::<Road, TicketQueue>::new();
+        while let Some(message) = messages.recv().await {
+            match message {
+                Message::Plate { record, camera } => {
                     tracing::info!("{camera:?} reports {record:?}");
-                    let tickets = self.insert_record(record, camera);
-                    self.dispatch_tickets(&tickets).await?;
+                    if let Some(ticket) = self.on_plate(record, camera) {
+                        let (sender, _) = queue(&mut queues, ticket.road);
+                        // Cannot fail as long as `queues` holds a receiver for the road.
+                        if let Err(error) = sender.send(ticket).await {
+                            tracing::error!(?error, "Ticket queue closed");
+                        }
+                    }
                 }
-                Some((road, sender)) = dispatcher_subscription.recv() => {
+                Message::Subscribe { road, callback } => {
                     tracing::info!("Received subscription for road {road}");
-                    let ticket_sender = self.insert_dispatcher(road);
-                    if let Err(_rx) = sender.send(ticket_sender) {
+                    let (_, receiver) = queue(&mut queues, road);
+                    if callback.send(receiver.clone()).is_err() {
                         tracing::warn!("They don't seem interested in this road anymore.");
                     }
                 }
-                else => break
             }
-            //dbg!(&self.records);
-            //dbg!(&self.dispatchers.keys());
-            //dbg!(&self.ticketed_days);
         }
         tracing::info!("Exiting Collector loop");
-        Ok(())
+        self
     }
 
-    pub fn insert_dispatcher(&mut self, road: u16) -> mpmc::Receiver<TicketRecord> {
-        // Create new channel for this road
-        let (_, receiver) = self
-            .dispatchers
-            .entry(road)
-            .or_insert_with(|| mpmc::bounded(1024));
-        receiver.clone()
+    /// Subscribe to the tickets for `road`.
+    ///
+    /// Returns `None` if the collector is not running.
+    pub async fn subscribe(
+        sender: &mpsc::Sender<Message>,
+        road: Road,
+    ) -> Option<oneshot::Receiver<mpmc::Receiver<TicketRecord>>> {
+        let (callback, callback_receiver) = oneshot::channel();
+        let message = Message::Subscribe { road, callback };
+
+        sender.send(message).await.ok()?;
+        Some(callback_receiver)
     }
 
-    async fn dispatch_tickets(&mut self, tickets: &[TicketRecord]) -> anyhow::Result<()> {
+    /// Record an observation, returning the ticket it warrants, if any.
+    fn on_plate(&mut self, record: PlateRecord, camera: Camera) -> Option<TicketRecord> {
+        let tickets = self.insert_record(record, camera);
+        self.admit(tickets)
+    }
+
+    /// Admit the first ticket which does not touch an already ticketed day, marking its days as ticketed.
+    fn admit(&mut self, tickets: Vec<TicketRecord>) -> Option<TicketRecord> {
         for ticket in tickets {
             tracing::info!("Violation found: {ticket:?}");
             let ticketed_days = self.ticketed_days.entry(ticket.plate.clone()).or_default();
@@ -81,16 +100,10 @@ impl Collector {
                 for day in Self::days(ticket.timestamp1, ticket.timestamp2) {
                     ticketed_days.insert(day);
                 }
-                // find mpmc sender for this road, or create and register one
-                let (tx, _) = self
-                    .dispatchers
-                    .entry(ticket.road)
-                    .or_insert_with(|| mpmc::bounded(1024));
-                tx.send(ticket.clone()).await?;
-                break;
+                return Some(ticket);
             }
         }
-        Ok(())
+        None
     }
 
     fn insert_record(
@@ -171,68 +184,47 @@ impl Collector {
     }
 }
 
+/// The ticket queue for `road`, created on first use.
+fn queue(queues: &mut HashMap<Road, TicketQueue>, road: Road) -> &TicketQueue {
+    queues.entry(road).or_insert_with(|| mpmc::bounded(1024))
+}
+
 #[cfg(test)]
-mod test {
+pub mod test {
     use super::*;
 
-    #[tokio::test]
-    async fn example() {
-        let (sender, receiver) = mpsc::channel(3);
-        sender
-            .send((
-                PlateRecord {
-                    plate: "ABC".to_string(),
-                    timestamp: 1,
-                },
-                Camera {
-                    road: 12,
-                    mile: 2,
-                    limit: 10,
-                },
-            ))
-            .await
-            .unwrap();
-        sender
-            .send((
-                PlateRecord {
-                    plate: "ABC".to_string(),
-                    timestamp: 20,
-                },
-                Camera {
-                    road: 12,
-                    mile: 4,
-                    limit: 10,
-                },
-            ))
-            .await
-            .unwrap();
-        sender
-            .send((
-                PlateRecord {
-                    plate: "ABC".to_string(),
-                    timestamp: 24,
-                },
-                Camera {
-                    road: 115,
-                    mile: 17,
-                    limit: 10,
-                },
-            ))
-            .await
-            .unwrap();
-        let (disp_tx, disp_rx) = mpsc::channel(1);
+    pub fn plate(plate: &str, timestamp: u32) -> PlateRecord {
+        PlateRecord {
+            plate: plate.to_string(),
+            timestamp,
+        }
+    }
 
-        let (tx, rx) = oneshot::channel();
-        disp_tx.send((12, tx)).await.unwrap();
-        drop(disp_tx);
+    pub fn camera(road: Road, mile: Mile, limit: Limit) -> Camera {
+        Camera { road, mile, limit }
+    }
+
+    #[tokio::test]
+    async fn queues_ticket_until_dispatcher_subscribes() {
+        let (sender, receiver) = mpsc::channel(4);
+        for (record, camera) in [
+            (plate("ABC", 1), camera(12, 2, 10)),
+            (plate("ABC", 20), camera(12, 4, 10)),
+            (plate("ABC", 24), camera(115, 17, 10)),
+        ] {
+            let message = Message::Plate { record, camera };
+            sender.send(message).await.unwrap();
+        }
+        let subscription = Collector::subscribe(&sender, 12).await.unwrap();
+
+        // Important for this test:
         drop(sender);
 
-        let col = Collector::new();
-        col.run(receiver, disp_rx).await.unwrap();
-        let ticket_rx = rx.await.unwrap();
-        let val = ticket_rx.recv().await.unwrap();
+        let collector = Collector::default().event_loop(receiver).await;
+
+        let tickets = subscription.await.unwrap();
         assert_eq!(
-            val,
+            tickets.recv().await.unwrap(),
             TicketRecord {
                 plate: "ABC".to_string(),
                 road: 12,
@@ -242,6 +234,62 @@ mod test {
                 timestamp2: 20,
                 speed: 37900,
             }
+        );
+        // The collector is gone, and so is the sender side of the queue.
+        assert!(tickets.recv().await.is_err());
+
+        assert_eq!(collector.limits, HashMap::from([(12, 1000), (115, 1000)]));
+        assert_eq!(collector.ticketed_days["ABC"], HashSet::from([0]));
+    }
+
+    #[tokio::test]
+    async fn subscription_fails_without_collector() {
+        let (sender, receiver) = mpsc::channel(1);
+        drop(receiver);
+        assert!(Collector::subscribe(&sender, 1).await.is_none());
+    }
+
+    #[test]
+    fn no_ticket_within_limit() {
+        let mut collector = Collector::default();
+        assert_eq!(collector.on_plate(plate("SLOW", 0), camera(1, 0, 60)), None);
+        assert_eq!(
+            collector.on_plate(plate("SLOW", 60), camera(1, 1, 60)),
+            None
+        );
+        assert!(collector.ticketed_days.is_empty());
+    }
+
+    #[test]
+    fn at_most_one_ticket_per_day() {
+        let mut collector = Collector::default();
+        assert_eq!(collector.on_plate(plate("FAST", 0), camera(1, 0, 60)), None);
+        let first = collector.on_plate(plate("FAST", 60), camera(1, 10, 60));
+        assert_eq!(first.map(|t| t.speed), Some(60000));
+        assert_eq!(
+            collector.on_plate(plate("FAST", 120), camera(1, 20, 60)),
+            None
+        );
+    }
+
+    #[test]
+    fn out_of_order_observations() {
+        let mut collector = Collector::default();
+        assert_eq!(
+            collector.on_plate(plate("LATE", 45), camera(123, 9, 60)),
+            None
+        );
+        assert_eq!(
+            collector.on_plate(plate("LATE", 0), camera(123, 8, 60)),
+            Some(TicketRecord {
+                plate: "LATE".to_string(),
+                road: 123,
+                mile1: 8,
+                timestamp1: 0,
+                mile2: 9,
+                timestamp2: 45,
+                speed: 8000,
+            })
         );
     }
 }
