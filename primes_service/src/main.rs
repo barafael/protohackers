@@ -93,3 +93,60 @@ where
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    async fn session(input: &str) -> Vec<serde_json::Value> {
+        let mut output = Vec::new();
+        handle_connection(input.as_bytes(), &mut output)
+            .await
+            .unwrap();
+        output
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect()
+    }
+
+    fn prime(prime: bool) -> serde_json::Value {
+        serde_json::json!({"method": "isPrime", "prime": prime})
+    }
+
+    #[tokio::test]
+    async fn answers_until_malformed_request() {
+        let responses = session(concat!(
+            r#"{"method":"isPrime","number":7}"#,
+            "\n",
+            r#"{"method":"isPrime","number":8,"extra":"ignored"}"#,
+            "\n",
+            r#"{"method":"isPrime","number":-7}"#,
+            "\n",
+            r#"{"method":"isComposite","number":7}"#,
+            "\n",
+            r#"{"method":"isPrime","number":7}"#,
+            "\n",
+        ))
+        .await;
+
+        assert_eq!(
+            responses,
+            [
+                prime(true),
+                prime(false),
+                prime(false),
+                serde_json::json!({"method": "Invalid method", "prime": false}),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn garbage_gets_one_malformed_response() {
+        let responses =
+            session("{\"method\":\"isPrime\"}\n{\"method\":\"isPrime\",\"number\":7}\n").await;
+
+        assert_eq!(responses.len(), 1);
+        assert_ne!(responses[0]["method"], "isPrime");
+    }
+}
