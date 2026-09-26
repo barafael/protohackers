@@ -153,7 +153,8 @@ impl Writer {
                     self.send_unacknowledged(peer).await?;
                     retransmission.as_mut().reset(Instant::now() + RETRANSMISSION_TIMEOUT);
                 }
-                () = &mut expiry, if !self.unacknowledged.is_empty() => {
+                // Whether the peer owes an acknowledgement or not, silence means it is gone.
+                () = &mut expiry => {
                     tracing::info!("No traffic, ending session {}", self.id);
                     return self.close(peer, reader).await;
                 }
@@ -497,6 +498,30 @@ mod test {
         assert_eq!(reader_rx.recv().await.unwrap(), Frame::Close(1));
         assert_eq!(start.elapsed(), Duration::ZERO);
         assert_eq!(writer.length, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expires_when_idle() {
+        // The application stays open, but has nothing to say.
+        let (application, _output) = tokio::io::duplex(64);
+        let mut sent = Vec::new();
+        let (inbox, rx) = mpsc::channel(8);
+        let (reader, mut reader_rx) = mpsc::channel(8);
+        let start = Instant::now();
+
+        let peer = async move {
+            // Something from the peer, then silence.
+            sleep(Duration::from_secs(30)).await;
+            inbox.send(Frame::Connect(1)).await.unwrap();
+            inbox
+        };
+        let session = Writer::with_id(1).event_loop(application, &mut sent, rx, reader);
+        let (writer, _inbox) = tokio::join!(timeout(Duration::from_secs(120), session), peer);
+
+        assert_eq!(writer.expect("Still waiting"), Writer::with_id(1));
+        assert_eq!(start.elapsed(), Duration::from_secs(90));
+        assert_eq!(sent, [Frame::Close(1)]);
+        assert_eq!(reader_rx.recv().await.unwrap(), Frame::Close(1));
     }
 
     #[test]
