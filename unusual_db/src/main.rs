@@ -2,7 +2,7 @@ use crate::message::Message;
 use db::Store;
 use futures::{sink, stream, Sink, Stream};
 use std::str::FromStr;
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{io, net::SocketAddr};
 use tokio::net::UdpSocket;
 
 mod db;
@@ -11,10 +11,10 @@ mod message;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let socket = UdpSocket::bind("0.0.0.0:8000".parse::<SocketAddr>().unwrap()).await?;
-    let socket = Arc::new(socket);
 
-    let requests = requests(socket.clone());
-    let responses = responses(socket);
+    // Both halves borrow the socket: the event loop runs right here, not in a spawned task.
+    let requests = requests(&socket);
+    let responses = responses(&socket);
     tokio::pin!(requests, responses);
 
     Store::new().event_loop(requests, responses).await;
@@ -24,7 +24,7 @@ async fn main() -> anyhow::Result<()> {
 /// The datagrams arriving at `socket`, as messages.
 ///
 /// Not a `UdpFramed`: a decoder cannot tell an empty datagram (a query for the empty key) from no datagram.
-fn requests(socket: Arc<UdpSocket>) -> impl Stream<Item = (Message, SocketAddr)> {
+fn requests(socket: &UdpSocket) -> impl Stream<Item = (Message, SocketAddr)> + '_ {
     stream::unfold(socket, |socket| async move {
         let mut buf = [0; 1024];
         loop {
@@ -47,7 +47,7 @@ fn requests(socket: Arc<UdpSocket>) -> impl Stream<Item = (Message, SocketAddr)>
 }
 
 /// Sends each response as a datagram from `socket`.
-fn responses(socket: Arc<UdpSocket>) -> impl Sink<(String, SocketAddr), Error = io::Error> {
+fn responses(socket: &UdpSocket) -> impl Sink<(String, SocketAddr), Error = io::Error> + '_ {
     sink::unfold(
         socket,
         |socket, (response, addr): (String, SocketAddr)| async move {
