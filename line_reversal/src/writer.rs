@@ -54,8 +54,9 @@ impl Writer {
         }
     }
 
-    /// Runs until the application closes, the session times out, the peer closes, or the inbox closes.
-    /// On the first two, the writer closes the session: it tells the peer and the session's reader.
+    /// Runs until the peer closes the session, or the inbox closes, or the writer closes the session:
+    /// when the application has closed and the peer has all its output, when the peer falls silent,
+    /// or when the peer misbehaves. Then, it tells the peer and the session's reader.
     pub async fn event_loop<A, S>(
         mut self,
         mut application: A,
