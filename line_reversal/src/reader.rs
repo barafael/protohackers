@@ -99,11 +99,16 @@ impl Reader {
     where
         A: AsyncWrite + Unpin,
     {
-        if position == self.length {
+        // Everything up to `position` has arrived: pass on the part which has not, if any.
+        // Otherwise, the ack tells the peer what is missing.
+        let new = (position <= self.length)
+            .then(|| data.as_bytes().get((self.length - position) as usize..))
+            .flatten()
+            .filter(|new| !new.is_empty());
+        if let Some(new) = new {
             tracing::info!("Accepting data for session {}", self.id);
-            self.length += data.len() as u32;
-            channel.write_all(data.as_bytes()).await?;
-            //channel.write(b"\n").await?;
+            self.length += new.len() as u32;
+            channel.write_all(new).await?;
         } else {
             tracing::info!(
                 "Ignoring data for session {}, position: {position}, actual received bytes: {}",
@@ -160,6 +165,29 @@ mod test {
         assert_eq!(application, b"hello\nworld\n");
         assert_eq!(sent, [ack(6), ack(6), ack(6), ack(6), ack(12)]);
         assert_eq!(reader, Reader { id: 1, length: 12 });
+    }
+
+    #[tokio::test]
+    async fn passes_on_the_new_part_of_overlapping_data() {
+        let (tx, rx) = mpsc::channel(8);
+        for frame in [
+            data(0, "hel"),
+            data(0, "hello\n"),
+            data(2, "llo"),
+            data(6, "world\n"),
+        ] {
+            tx.send(frame).await.unwrap();
+        }
+        drop(tx);
+
+        let mut application = Vec::new();
+        let mut sent = Vec::new();
+        Reader::with_id(1)
+            .event_loop(&mut application, &mut sent, rx)
+            .await;
+
+        assert_eq!(application, b"hello\nworld\n");
+        assert_eq!(sent, [ack(3), ack(6), ack(6), ack(12)]);
     }
 
     #[tokio::test]
