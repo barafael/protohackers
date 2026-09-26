@@ -1,11 +1,13 @@
-use futures_util::{Sink, SinkExt};
+use bytes::BytesMut;
+use futures_util::{Sink, SinkExt, StreamExt};
 use lrcp_codec::Frame;
 use std::time::Duration;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt},
+    io::AsyncRead,
     sync::mpsc,
     time::{sleep, Instant},
 };
+use tokio_util::codec::{Decoder, FramedRead};
 
 /// How long to wait for an acknowledgement before sending data again.
 const RETRANSMISSION_TIMEOUT: Duration = Duration::from_secs(3);
@@ -94,9 +96,9 @@ impl Writer {
         let expiry = sleep(SESSION_EXPIRY_TIMEOUT);
         tokio::pin!(retransmission, expiry);
 
+        let mut application = FramedRead::new(application, Text);
         // Whether the application may produce more output.
         let mut open = true;
-        let mut buffer = [0u8; 1024];
         loop {
             tokio::select! {
                 // When the peer closes, the application closes as a consequence: that is no reason to close.
@@ -129,23 +131,21 @@ impl Writer {
                         Frame::Connect(_) | Frame::Data { .. } => {}
                     }
                 }
-                read = application.read(&mut buffer), if open && self.unacknowledged.len() < WINDOW => {
-                    let len = read?;
-                    if len == 0 {
+                output = application.next(), if open && self.unacknowledged.len() < WINDOW => {
+                    if let Some(output) = output {
+                        if self.unacknowledged.is_empty() {
+                            // Now waiting for the peer.
+                            retransmission.as_mut().reset(Instant::now() + RETRANSMISSION_TIMEOUT);
+                            expiry.as_mut().reset(Instant::now() + SESSION_EXPIRY_TIMEOUT);
+                        }
+                        self.send(peer, &output?).await?;
+                    } else {
                         // Close once the peer has everything.
                         open = false;
                         if self.unacknowledged.is_empty() {
                             tracing::info!("Application closed, ending session {}", self.id);
                             return self.close(peer, reader).await;
                         }
-                    } else {
-                        if self.unacknowledged.is_empty() {
-                            // Now waiting for the peer.
-                            retransmission.as_mut().reset(Instant::now() + RETRANSMISSION_TIMEOUT);
-                            expiry.as_mut().reset(Instant::now() + SESSION_EXPIRY_TIMEOUT);
-                        }
-                        let output = buffer[..len].iter().map(|c| *c as char).collect::<String>();
-                        self.send(peer, &output).await?;
                     }
                 }
                 () = &mut retransmission, if !self.unacknowledged.is_empty() => {
@@ -229,6 +229,27 @@ where
     Ok(())
 }
 
+/// Decodes the application's output as text, holding back a character until it is complete.
+struct Text;
+
+impl Decoder for Text {
+    type Item = String;
+    type Error = anyhow::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> anyhow::Result<Option<String>> {
+        let complete = match std::str::from_utf8(src) {
+            Ok(text) => text.len(),
+            // Incomplete, rather than invalid.
+            Err(error) if error.error_len().is_none() => error.valid_up_to(),
+            Err(error) => return Err(error.into()),
+        };
+        if complete == 0 {
+            return Ok(None);
+        }
+        Ok(Some(String::from_utf8(src.split_to(complete).to_vec())?))
+    }
+}
+
 /// Tell the session's reader to close.
 async fn tell(reader: &mpsc::Sender<Frame>, id: u32) {
     if reader.send(Frame::Close(id)).await.is_err() {
@@ -239,10 +260,9 @@ async fn tell(reader: &mpsc::Sender<Frame>, id: u32) {
 #[cfg(test)]
 mod test {
     use super::*;
-    use bytes::BytesMut;
     use futures_util::StreamExt;
     use lrcp_codec::Lrcp;
-    use tokio::time::timeout;
+    use tokio::{io::AsyncWriteExt, time::timeout};
     use tokio_util::codec::Encoder;
 
     fn data(position: u32, data: &str) -> Frame {
@@ -522,6 +542,33 @@ mod test {
         assert_eq!(start.elapsed(), Duration::from_secs(90));
         assert_eq!(sent, [Frame::Close(1)]);
         assert_eq!(reader_rx.recv().await.unwrap(), Frame::Close(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn keeps_characters_intact() {
+        let (application, mut output) = tokio::io::duplex(64);
+        let (sent, mut peer) = futures::channel::mpsc::unbounded();
+        let (inbox, rx) = mpsc::channel(8);
+        let (reader, _reader_rx) = mpsc::channel(8);
+
+        let peer = async move {
+            // A character in two parts.
+            output.write_all(&[0xc3]).await.unwrap();
+            sleep(Duration::from_millis(1)).await;
+            output.write_all(&[0xa9, b'\n']).await.unwrap();
+            drop(output);
+            let frame = peer.next().await;
+            inbox.send(ack(3)).await.unwrap();
+            (frame, inbox, peer)
+        };
+        let (writer, (frame, _inbox, peer)) = tokio::join!(
+            Writer::with_id(1).event_loop(application, sent, rx, reader),
+            peer,
+        );
+
+        assert_eq!(frame, Some(data(0, "é\n")));
+        assert_eq!(peer.collect::<Vec<_>>().await, [Frame::Close(1)]);
+        assert_eq!(writer.length, 3);
     }
 
     #[test]
