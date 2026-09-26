@@ -39,6 +39,8 @@ enum Ack {
     Partial,
     /// All of the output.
     Complete,
+    /// More than was ever sent: the peer is misbehaving.
+    Invalid,
 }
 
 impl Writer {
@@ -118,6 +120,10 @@ impl Writer {
                                 return self.close(peer, reader).await;
                             }
                             Ack::Complete => {}
+                            Ack::Invalid => {
+                                tracing::warn!("Peer acknowledged {length} bytes, ending session {}", self.id);
+                                return self.close(peer, reader).await;
+                            }
                         },
                         Frame::Close(_) => return Ok(()),
                         Frame::Connect(_) | Frame::Data { .. } => {}
@@ -157,9 +163,11 @@ impl Writer {
 
     /// Take note that the peer acknowledged the first `length` bytes of the output.
     fn on_ack(&mut self, length: u32) -> Ack {
-        let sent = self.length + self.unacknowledged.len() as u32;
-        if length <= self.length || length > sent {
+        if length <= self.length {
             return Ack::Stale;
+        }
+        if length > self.length + self.unacknowledged.len() as u32 {
+            return Ack::Invalid;
         }
         // Lengths count bytes: never cut a character in half.
         let acknowledged = self
@@ -466,6 +474,31 @@ mod test {
         assert_eq!(writer.unacknowledged, "olleh\n");
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn closes_when_more_is_acknowledged_than_was_sent() {
+        let application: &[u8] = b"olleh\n";
+        let (sent, mut peer) = futures::channel::mpsc::unbounded();
+        let (inbox, rx) = mpsc::channel(8);
+        let (reader, mut reader_rx) = mpsc::channel(8);
+        let start = Instant::now();
+
+        let peer = async move {
+            let frame = peer.next().await;
+            inbox.send(ack(7)).await.unwrap();
+            (frame, inbox, peer)
+        };
+        let (writer, (frame, _inbox, peer)) = tokio::join!(
+            Writer::with_id(1).event_loop(application, sent, rx, reader),
+            peer,
+        );
+
+        assert_eq!(frame, Some(data(0, "olleh\n")));
+        assert_eq!(peer.collect::<Vec<_>>().await, [Frame::Close(1)]);
+        assert_eq!(reader_rx.recv().await.unwrap(), Frame::Close(1));
+        assert_eq!(start.elapsed(), Duration::ZERO);
+        assert_eq!(writer.length, 0);
+    }
+
     #[test]
     fn acknowledgements() {
         let mut writer = Writer {
@@ -475,6 +508,8 @@ mod test {
         };
         assert_eq!(writer.on_ack(3), Ack::Stale);
         assert_eq!(writer.on_ack(2), Ack::Stale);
+        assert_eq!(writer.on_ack(9), Ack::Invalid);
+        assert_eq!(writer.unacknowledged, "lo\nwo");
         assert_eq!(writer.on_ack(5), Ack::Partial);
         assert_eq!(writer.unacknowledged, "\nwo");
         assert_eq!(writer.on_ack(4), Ack::Stale);
