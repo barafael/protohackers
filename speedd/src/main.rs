@@ -1,5 +1,3 @@
-#![feature(iter_array_chunks)]
-
 use crate::client::Client;
 use crate::collector::Collector;
 use anyhow::Context;
