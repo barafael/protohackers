@@ -1,5 +1,4 @@
 use futures_util::{Sink, SinkExt};
-use itertools::Itertools;
 use lrcp_codec::Frame;
 use std::iter::Iterator;
 use std::{collections::VecDeque, time::Duration};
@@ -125,7 +124,13 @@ impl Writer {
                         tell(close, self.id).await;
                         break;
                     }
-                    self.chunks.extend(buffer[..len].iter().map(|c| *c as char).chunks(1000 - 17).into_iter().map(Iterator::collect::<String>));
+                    let output = buffer[..len].iter().map(|c| *c as char).collect::<String>();
+                    // Everything sent so far is acknowledged, so the output starts at `self.length`.
+                    let frames = Frame::data(self.id, self.length, &output);
+                    self.chunks.extend(frames.into_iter().filter_map(|frame| match frame {
+                        Frame::Data { data, .. } => Some(data),
+                        _ => None,
+                    }));
                     let item = self.chunks.pop_front().unwrap();
                     tracing::debug!(?item);
                     self.awaiting_ack = Some(Frame::Ack {
@@ -181,7 +186,10 @@ async fn tell(reader: &mpsc::Sender<Frame>, id: u32) {
 #[cfg(test)]
 mod test {
     use super::*;
+    use bytes::BytesMut;
     use futures_util::StreamExt;
+    use lrcp_codec::Lrcp;
+    use tokio_util::codec::Encoder;
 
     fn data(position: u32, data: &str) -> Frame {
         Frame::Data {
@@ -244,6 +252,39 @@ mod test {
         // Escaping is up to the codec.
         assert_eq!(frame, Some(data(0, "a/b\\c\n")));
         assert_eq!(writer.length, 6);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn every_frame_fits_a_datagram() {
+        let output = format!("{}\n", "/".repeat(1000));
+        let application = output.as_bytes();
+        let (sent, mut peer) = futures::channel::mpsc::unbounded();
+        let (inbox, rx) = mpsc::channel(8);
+        let (reader, _reader_rx) = mpsc::channel(8);
+
+        let peer = async move {
+            let mut received = String::new();
+            while received.len() < 1001 {
+                let frame: Frame = peer.next().await.unwrap();
+                let mut datagram = BytesMut::new();
+                Lrcp.encode(frame.clone(), &mut datagram).unwrap();
+                assert!(datagram.len() < 1000);
+                if let Frame::Data { position, data, .. } = frame {
+                    if position as usize == received.len() {
+                        received.push_str(&data);
+                    }
+                }
+                inbox.send(ack(received.len() as u32)).await.unwrap();
+            }
+            (received, inbox)
+        };
+        let (writer, (received, _inbox)) = tokio::join!(
+            Writer::with_id(1).event_loop(application, sent, rx, reader),
+            peer,
+        );
+
+        assert_eq!(received.as_bytes(), application);
+        assert_eq!(writer.length, 1001);
     }
 
     #[tokio::test(start_paused = true)]
