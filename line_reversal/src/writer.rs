@@ -32,7 +32,7 @@ impl Writer {
     }
 
     /// Runs until the application closes, the session times out, the peer closes, or the inbox closes.
-    /// On the first two, the session's reader is told to close.
+    /// On the first two, the writer closes the session: it tells the peer and the session's reader.
     pub async fn event_loop<A, S>(
         mut self,
         mut application: A,
@@ -75,6 +75,9 @@ impl Writer {
         let mut buffer = [0u8; 1024];
         loop {
             tokio::select! {
+                // When the peer closes, the application closes as a consequence: that is no reason to close.
+                biased;
+
                 // Receive acknowledgement and close messages
                 msg = reader.recv() => {
                     let Some(msg) = msg else {
@@ -121,8 +124,7 @@ impl Writer {
                 Ok(len) = channel.read(&mut buffer), if self.current_item.is_none() => {
                     if len == 0 {
                         tracing::info!("Application channel closed, ending session {}", self.id);
-                        tell(close, self.id).await;
-                        break;
+                        return self.close(writer, close).await;
                     }
                     let output = buffer[..len].iter().map(|c| *c as char).collect::<String>();
                     // Everything sent so far is acknowledged, so the output starts at `self.length`.
@@ -166,13 +168,21 @@ impl Writer {
                 // TODO use time::Interval here?
                 () = &mut session_timer, if self.current_item.is_some() => {
                     tracing::info!("No traffic, ending session");
-                    tell(close, self.id).await;
-                    // TODO writer.send(Frame::Close...))?
-                    break;
+                    return self.close(writer, close).await;
                 }
             }
         }
         Ok(())
+    }
+
+    /// End the session, telling the session's reader and the peer.
+    async fn close<S>(&self, peer: &mut S, reader: &mpsc::Sender<Frame>) -> anyhow::Result<()>
+    where
+        S: Sink<Frame> + Unpin,
+        S::Error: Into<anyhow::Error>,
+    {
+        tell(reader, self.id).await;
+        peer.send(Frame::Close(self.id)).await.map_err(Into::into)
     }
 }
 
@@ -214,14 +224,15 @@ mod test {
             let frame = peer.next().await;
             inbox.send(ack(6)).await.unwrap();
             // Keep the inbox open: if it closed, too, the writer might end for that reason instead.
-            (frame, inbox)
+            (frame, inbox, peer)
         };
-        let (writer, (frame, _inbox)) = tokio::join!(
+        let (writer, (frame, _inbox, peer)) = tokio::join!(
             Writer::with_id(1).event_loop(application, sent, rx, reader),
             peer,
         );
 
         assert_eq!(frame, Some(data(0, "olleh\n")));
+        assert_eq!(peer.collect::<Vec<_>>().await, [Frame::Close(1)]);
         assert_eq!(reader_rx.recv().await.unwrap(), Frame::Close(1));
         assert_eq!(
             writer,
@@ -334,6 +345,8 @@ mod test {
 
         assert_eq!(start.elapsed(), Duration::from_secs(60));
         assert_eq!(reader_rx.recv().await.unwrap(), Frame::Close(1));
+        // The peer is told, too.
+        assert_eq!(sent.pop(), Some(Frame::Close(1)));
         // Sent every 3 seconds; at 60 seconds, retransmission and timeout coincide.
         assert!((20..=21).contains(&sent.len()));
         assert!(sent.iter().all(|frame| *frame == data(0, "olleh\n")));
