@@ -9,7 +9,10 @@ use speedd_codecs::{
     server::decoder::MessageDecoder as Decoder,
 };
 use std::time::Duration;
-use tokio::net::TcpStream;
+use tokio::{
+    net::{tcp::OwnedReadHalf, TcpStream},
+    task::JoinHandle,
+};
 use tokio_util::codec::{FramedRead, FramedWrite};
 
 mod arguments;
@@ -21,7 +24,7 @@ async fn main() -> anyhow::Result<()> {
     let client = TcpStream::connect(args.address).await?;
     let (reader, writer) = client.into_split();
 
-    let mut reader = FramedRead::new(reader, Decoder);
+    let reader = FramedRead::new(reader, Decoder);
     let mut writer = FramedWrite::new(writer, Encoder);
 
     if !args.interval.is_zero() {
@@ -32,11 +35,7 @@ async fn main() -> anyhow::Result<()> {
 
     match args.mode {
         Mode::Client => {
-            tokio::task::spawn(async move {
-                while let Some(Ok(msg)) = reader.next().await {
-                    println!("{msg:?}");
-                }
-            });
+            let printer = tokio::spawn(print_all(reader));
             let wanthb = client::Message::WantHeartbeat(Duration::from_secs(1));
             let iam = client::Message::IAmCamera(Camera {
                 limit: 1,
@@ -51,6 +50,9 @@ async fn main() -> anyhow::Result<()> {
             let mut rl = rustyline::Editor::<(), DefaultHistory>::new()?;
             loop {
                 let readline = rl.readline(">> ");
+                if printer.is_finished() {
+                    break;
+                }
                 match readline {
                     Ok(line) => {
                         if line.is_empty() {
@@ -79,8 +81,10 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+            stop(printer).await;
         }
         Mode::Dispatcher { roads } => {
+            let mut reader = reader;
             println!("Registering as dispatcher");
             writer.send(client::Message::IAmDispatcher(roads)).await?;
 
@@ -100,11 +104,7 @@ async fn main() -> anyhow::Result<()> {
             println!("Finished listening loop");
         }
         Mode::Camera { road, mile, limit } => {
-            tokio::task::spawn(async move {
-                while let Some(Ok(msg)) = reader.next().await {
-                    println!("{msg:?}");
-                }
-            });
+            let printer = tokio::spawn(print_all(reader));
             writer
                 .send(client::Message::IAmCamera(Camera { road, mile, limit }))
                 .await?;
@@ -112,6 +112,9 @@ async fn main() -> anyhow::Result<()> {
             let mut rl = rustyline::Editor::<(), DefaultHistory>::new()?;
             loop {
                 let readline = rl.readline(">> ");
+                if printer.is_finished() {
+                    break;
+                }
                 match readline {
                     Ok(line) => {
                         let mut tokens = line.split_whitespace();
@@ -143,7 +146,35 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+            stop(printer).await;
         }
     }
     Ok(())
+}
+
+/// Print what the server sends, until it hangs up.
+async fn print_all(mut reader: FramedRead<OwnedReadHalf, Decoder>) {
+    loop {
+        match reader.next().await {
+            Some(Ok(msg)) => println!("{msg:?}"),
+            Some(Err(e)) => {
+                eprintln!("{e:?}");
+                break;
+            }
+            None => {
+                println!("Server closed the connection");
+                break;
+            }
+        }
+    }
+}
+
+/// Stop printing, without swallowing a panic of the printer.
+async fn stop(printer: JoinHandle<()>) {
+    printer.abort();
+    if let Err(error) = printer.await {
+        if error.is_panic() {
+            std::panic::resume_unwind(error.into_panic());
+        }
+    }
 }

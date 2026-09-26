@@ -2,7 +2,11 @@ use anyhow::Context;
 use futures::{stream::StreamExt, Sink, SinkExt, Stream};
 use room::Room;
 use std::net::SocketAddr;
-use tokio::{net::TcpListener, sync::mpsc};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::mpsc,
+    task::{JoinError, JoinSet},
+};
 use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec, LinesCodecError};
 
 mod room;
@@ -13,13 +17,40 @@ const WELCOME: &str = "Welcome to budgetchat! What shall I call you?";
 async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind("0.0.0.0:8000").await?;
     let (room, messages) = mpsc::channel(256);
-    tokio::spawn(Room::default().event_loop(messages));
+    let mut room_task = tokio::spawn(Room::default().event_loop(messages));
+    let mut connections = JoinSet::new();
     loop {
-        let (stream, addr) = listener.accept().await?;
-        let (reader, writer) = stream.into_split();
-        let reader = FramedRead::new(reader, LinesCodec::default());
-        let writer = FramedWrite::new(writer, LinesCodec::default());
-        tokio::spawn(handle_connection(reader, writer, addr, room.clone()));
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, addr) = accepted?;
+                connections.spawn(serve(stream, addr, room.clone()));
+            }
+            Some(finished) = connections.join_next() => report(finished),
+            finished = &mut room_task => {
+                // This loop holds a sender, so the room only stops if it panics.
+                let room = finished.context("Room failed")?;
+                anyhow::bail!("Room stopped with {room:?}");
+            }
+        }
+    }
+}
+
+async fn serve(
+    stream: TcpStream,
+    addr: SocketAddr,
+    room: mpsc::Sender<room::Message>,
+) -> (SocketAddr, anyhow::Result<()>) {
+    let (reader, writer) = stream.into_split();
+    let reader = FramedRead::new(reader, LinesCodec::default());
+    let writer = FramedWrite::new(writer, LinesCodec::default());
+    (addr, handle_connection(reader, writer, addr, room).await)
+}
+
+fn report(finished: Result<(SocketAddr, anyhow::Result<()>), JoinError>) {
+    match finished {
+        Ok((_, Ok(()))) => {}
+        Ok((addr, Err(error))) => println!("Connection {addr} failed: {error:#}"),
+        Err(error) => println!("Connection task failed: {error}"),
     }
 }
 

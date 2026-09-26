@@ -5,6 +5,7 @@ use std::{
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter},
     net::{TcpListener, TcpStream},
+    task::JoinSet,
 };
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
@@ -36,37 +37,55 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = TcpListener::bind(listen_addr).await?;
 
-    while let Ok((mut client, addr)) = listener.accept().await {
-        tracing::info!("Accepted client from {}", addr);
-
-        tokio::spawn(async move {
-            let (client_reader, client_writer) = client.split();
-            let (client_reader, client_writer) =
-                (BufReader::new(client_reader), BufWriter::new(client_writer));
-
-            let mut upstream = TcpStream::connect(server_addr).await.unwrap();
-            let (upstream_reader, upstream_writer) = upstream.split();
-            let (upstream_reader, upstream_writer) = (
-                BufReader::new(upstream_reader),
-                BufWriter::new(upstream_writer),
-            );
-
-            let client_to_upstream = forward(client_reader, upstream_writer);
-
-            let upstream_to_client = forward(upstream_reader, client_writer);
-
-            tokio::select! {
-                err = client_to_upstream => {
-                    tracing::error!("Client to upstream: {:?}", err);
-                },
-                err = upstream_to_client => {
-                    tracing::error!("Upstream to client: {:?}", err);
-                },
+    let mut sessions = JoinSet::new();
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (client, addr) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        tracing::error!(?error, "Failed to accept");
+                        break;
+                    }
+                };
+                tracing::info!("Accepted client from {}", addr);
+                sessions.spawn(proxy(client, addr, server_addr));
             }
-            tracing::info!("Disconnected");
-        });
+            Some(finished) = sessions.join_next() => match finished {
+                Ok(addr) => tracing::info!("Disconnected {addr}"),
+                Err(error) => tracing::error!(?error, "Proxy task failed"),
+            },
+        }
     }
     Ok(())
+}
+
+/// Proxy one client until either side hangs up.
+async fn proxy(mut client: TcpStream, addr: SocketAddr, server_addr: SocketAddr) -> SocketAddr {
+    let (client_reader, client_writer) = client.split();
+    let (client_reader, client_writer) =
+        (BufReader::new(client_reader), BufWriter::new(client_writer));
+
+    let mut upstream = TcpStream::connect(server_addr).await.unwrap();
+    let (upstream_reader, upstream_writer) = upstream.split();
+    let (upstream_reader, upstream_writer) = (
+        BufReader::new(upstream_reader),
+        BufWriter::new(upstream_writer),
+    );
+
+    let client_to_upstream = forward(client_reader, upstream_writer);
+
+    let upstream_to_client = forward(upstream_reader, client_writer);
+
+    tokio::select! {
+        err = client_to_upstream => {
+            tracing::error!("Client to upstream: {:?}", err);
+        },
+        err = upstream_to_client => {
+            tracing::error!("Upstream to client: {:?}", err);
+        },
+    }
+    addr
 }
 
 async fn forward<R, W>(mut reader: R, mut writer: W) -> Result<(), anyhow::Error>

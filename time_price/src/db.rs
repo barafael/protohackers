@@ -27,6 +27,11 @@ impl Db {
         self
     }
 
+    /// How many prices the client has told us about.
+    pub fn count(&self) -> usize {
+        self.0.len()
+    }
+
     pub fn insert(&mut self, time: i32, price: i32) {
         self.0.insert(time, price);
     }
@@ -76,7 +81,7 @@ mod test {
         let db = Db::default().event_loop(requests, &mut responses).await;
 
         assert_eq!(responses, [101]);
-        assert_eq!(db.0.len(), 4);
+        assert_eq!(db.count(), 4);
     }
 
     #[tokio::test]
@@ -90,7 +95,7 @@ mod test {
         ];
         let mut output = Vec::new();
 
-        Db::default()
+        let db = Db::default()
             .event_loop(
                 FramedRead::new(input, RequestDecoder),
                 FramedWrite::new(&mut output, ResponseEncoder),
@@ -98,6 +103,7 @@ mod test {
             .await;
 
         assert_eq!(output, [0x00, 0x00, 0x00, 0x65]);
+        assert_eq!(db.count(), 4);
     }
 
     #[test]

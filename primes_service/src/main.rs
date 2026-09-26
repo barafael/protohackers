@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Number;
 use serde_jsonlines::{AsyncJsonLinesReader, AsyncJsonLinesWriter};
+use std::net::SocketAddr;
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinSet;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct Request {
@@ -35,13 +37,25 @@ impl Response {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind("0.0.0.0:8000").await?;
+    let mut connections = JoinSet::new();
     loop {
-        let (mut stream, _) = listener.accept().await?;
-        tokio::spawn(async move {
-            let (reader, writer) = stream.split();
-            handle_connection(reader, writer).await
-        });
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, addr) = accepted?;
+                connections.spawn(serve(stream, addr));
+            }
+            Some(finished) = connections.join_next() => match finished {
+                Ok((_, Ok(()))) => {}
+                Ok((addr, Err(error))) => eprintln!("Connection {addr} failed: {error:#}"),
+                Err(error) => eprintln!("Connection task failed: {error}"),
+            },
+        }
     }
+}
+
+async fn serve(mut stream: TcpStream, addr: SocketAddr) -> (SocketAddr, anyhow::Result<()>) {
+    let (reader, writer) = stream.split();
+    (addr, handle_connection(reader, writer).await)
 }
 
 async fn handle_connection<R, W>(reader: R, writer: W) -> anyhow::Result<()>

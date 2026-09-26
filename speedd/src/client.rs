@@ -202,7 +202,7 @@ async fn subscribe(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::collector::test::{camera, plate};
+    use crate::collector::test::{camera, observed, plate};
     use futures::{channel::mpsc as unbounded, future, stream};
 
     fn error(text: &str) -> Action {
@@ -328,10 +328,11 @@ mod test {
         let (collector, _collector_rx) = mpsc::channel(1);
         let mut written = Vec::<server::Message>::new();
 
-        Client::default()
+        let client = Client::default()
             .event_loop(reader, &mut written, collector)
             .await;
 
+        assert_eq!(client.role, Role::Camera(camera(123, 8, 60)));
         // With `RUST_BACKTRACE` set, the debug-formatted error carries a backtrace.
         assert!(matches!(
             written.as_slice(),
@@ -384,7 +385,7 @@ mod test {
             message
         };
 
-        let (_, _, _, dispatcher, ticket) = tokio::join!(
+        let (collector, camera1, camera2, dispatcher, ticket) = tokio::join!(
             Collector::default().event_loop(collector_rx),
             Client::default().event_loop(camera1, Vec::new(), collector.clone()),
             Client::default().event_loop(camera2, Vec::new(), collector.clone()),
@@ -404,6 +405,15 @@ mod test {
                 speed: 8000,
             }))
         );
+        assert_eq!(camera1.role, Role::Camera(camera(123, 8, 60)));
+        assert_eq!(camera2.role, Role::Camera(camera(123, 9, 60)));
         assert_eq!(dispatcher.role, Role::Dispatcher(vec![123]));
+        assert_eq!(
+            collector,
+            observed([
+                (plate("UN1X", 0), camera(123, 8, 60)),
+                (plate("UN1X", 45), camera(123, 9, 60)),
+            ])
+        );
     }
 }

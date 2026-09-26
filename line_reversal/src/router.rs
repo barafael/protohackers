@@ -79,7 +79,7 @@ impl Router {
         addr: SocketAddr,
         outbound: &mpsc::Sender<(Frame, SocketAddr)>,
         inboxes: &mut HashMap<u32, Inboxes>,
-        tasks: &mut JoinSet<()>,
+        tasks: &mut JoinSet<Session>,
     ) -> anyhow::Result<()> {
         match frame {
             Frame::Connect(session) => {
@@ -170,7 +170,7 @@ fn spawn_session(
     id: u32,
     addr: SocketAddr,
     outbound: &mpsc::Sender<(Frame, SocketAddr)>,
-    tasks: &mut JoinSet<()>,
+    tasks: &mut JoinSet<Session>,
 ) -> Inboxes {
     let (reader_tx, reader_rx) = mpsc::channel(64);
     let (writer_tx, writer_rx) = mpsc::channel(64);
@@ -187,18 +187,38 @@ fn spawn_session(
     let writer = Writer::with_id(id).event_loop(read, to_peer(), writer_rx, reader_tx.clone());
     let application = reverse_lines(application);
     tasks.spawn(async move {
-        let (_, application, _) = tokio::join!(reader, application, writer);
-        if let Err(error) = application {
-            tracing::warn!(?error, "Application for session {id} failed");
+        let (reader, application, writer) = tokio::join!(reader, application, writer);
+        Session {
+            reader,
+            application,
+            writer,
         }
     });
 
     [reader_tx, writer_tx]
 }
 
-fn finished(result: Result<(), tokio::task::JoinError>) {
-    if let Err(error) = result {
-        tracing::error!(?error, "Session task failed");
+/// What a session leaves behind.
+#[derive(Debug)]
+struct Session {
+    reader: Reader,
+    application: anyhow::Result<()>,
+    writer: Writer,
+}
+
+fn finished(result: Result<Session, tokio::task::JoinError>) {
+    match result {
+        Ok(Session {
+            reader,
+            application: Ok(()),
+            writer,
+        }) => tracing::info!(?reader, ?writer, "Session finished"),
+        Ok(Session {
+            reader,
+            application: Err(error),
+            writer,
+        }) => tracing::warn!(?reader, ?writer, ?error, "Application failed"),
+        Err(error) => tracing::error!(?error, "Session task failed"),
     }
 }
 

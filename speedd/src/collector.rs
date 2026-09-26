@@ -204,6 +204,15 @@ pub mod test {
         Camera { road, mile, limit }
     }
 
+    /// The collector after these observations, fed straight to its pure core.
+    pub fn observed(observations: impl IntoIterator<Item = (PlateRecord, Camera)>) -> Collector {
+        let mut collector = Collector::default();
+        for (record, camera) in observations {
+            collector.on_plate(record, camera);
+        }
+        collector
+    }
+
     #[tokio::test]
     async fn queues_ticket_until_dispatcher_subscribes() {
         let (sender, receiver) = mpsc::channel(4);

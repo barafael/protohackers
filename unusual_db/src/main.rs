@@ -17,7 +17,8 @@ async fn main() -> anyhow::Result<()> {
     let responses = responses(&socket);
     tokio::pin!(requests, responses);
 
-    Store::new().event_loop(requests, responses).await;
+    let store = Store::new().event_loop(requests, responses).await;
+    println!("Socket closed, dropping {} keys", store.0.len());
     Ok(())
 }
 
