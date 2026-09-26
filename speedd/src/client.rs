@@ -47,6 +47,8 @@ enum Event {
 pub enum Action {
     None,
     Send(server::Message),
+    /// Send the message, then hang up: the client broke the protocol.
+    SendAndClose(server::Message),
     Report(PlateRecord, Camera),
     StartHeartbeat(Duration),
     Subscribe(Vec<Road>),
@@ -79,9 +81,13 @@ impl Client {
                 Some(ticket) = tickets.next() => Event::Ticket(ticket),
             };
 
-            let result = match self.on_event(event) {
+            let action = self.on_event(event);
+            let close = matches!(action, Action::SendAndClose(_));
+            let result = match action {
                 Action::None => Ok(()),
-                Action::Send(message) => writer.send(message).await.map_err(Into::into),
+                Action::Send(message) | Action::SendAndClose(message) => {
+                    writer.send(message).await.map_err(Into::into)
+                }
                 Action::Report(record, camera) => collector
                     .send(collector::Message::Plate { record, camera })
                     .await
@@ -98,6 +104,10 @@ impl Client {
                 tracing::warn!(?error, "Closing client connection");
                 break;
             }
+            if close {
+                tracing::info!("Closing client connection after protocol error");
+                break;
+            }
         }
         tracing::info!("Leaving client connection loop");
         self
@@ -109,11 +119,13 @@ impl Client {
                 tracing::trace!("Received client message {message:?}");
                 self.on_message(message)
             }
-            Event::Garbage(error) => Action::Send(server::Message::Error(match self.role {
-                Role::Unidentified => format!("... who even are you? {error:?}"),
-                Role::Camera(_) => format!("Nahh... you're just a camera. {error:?}"),
-                Role::Dispatcher(_) => format!("Nahh... you're just a dispatcher. {error:?}"),
-            })),
+            Event::Garbage(error) => {
+                Action::SendAndClose(server::Message::Error(match self.role {
+                    Role::Unidentified => format!("... who even are you? {error:?}"),
+                    Role::Camera(_) => format!("Nahh... you're just a camera. {error:?}"),
+                    Role::Dispatcher(_) => format!("Nahh... you're just a dispatcher. {error:?}"),
+                }))
+            }
             Event::Heartbeat => {
                 tracing::trace!("Sending heartbeat");
                 Action::Send(server::Message::Heartbeat)
@@ -126,8 +138,10 @@ impl Client {
     }
 
     /// The client protocol, as a pure state transition.
+    ///
+    /// Every error is fatal: the client is told what it did wrong, then disconnected.
     fn on_message(&mut self, message: Message) -> Action {
-        let error = |text: &str| Action::Send(server::Message::Error(text.to_string()));
+        let error = |text: &str| Action::SendAndClose(server::Message::Error(text.to_string()));
         match (&self.role, message) {
             (_, Message::WantHeartbeat(period)) => {
                 if self.heartbeat.is_some() {
@@ -206,7 +220,7 @@ mod test {
     use futures::{channel::mpsc as unbounded, future, stream};
 
     fn error(text: &str) -> Action {
-        Action::Send(server::Message::Error(text.to_string()))
+        Action::SendAndClose(server::Message::Error(text.to_string()))
     }
 
     #[test]
@@ -338,6 +352,38 @@ mod test {
             written.as_slice(),
             [server::Message::Error(text)] if text.starts_with("Nahh... you're just a camera. bad")
         ));
+    }
+
+    #[tokio::test]
+    async fn hangs_up_after_protocol_error() {
+        let camera_again = || Ok(Message::IAmCamera(camera(1, 2, 3)));
+        let no_heartbeat = || Ok(Message::WantHeartbeat(Duration::ZERO));
+        for offense in [
+            vec![Ok(Message::Plate(plate("UN1X", 0)))],
+            vec![camera_again(), camera_again()],
+            vec![camera_again(), Ok(Message::IAmDispatcher(vec![1]))],
+            vec![no_heartbeat(), no_heartbeat()],
+            vec![Err(anyhow::anyhow!("bad"))],
+        ] {
+            // Had the connection stayed open, the client would report a plate.
+            let then = [
+                Ok(Message::IAmCamera(camera(4, 5, 6))),
+                Ok(Message::Plate(plate("UN1X", 1))),
+            ];
+            let reader = stream::iter(offense.into_iter().chain(then));
+            let (collector, mut collector_rx) = mpsc::channel(4);
+            let mut written = Vec::<server::Message>::new();
+
+            Client::default()
+                .event_loop(reader, &mut written, collector)
+                .await;
+
+            assert!(
+                matches!(written.as_slice(), [server::Message::Error(_)]),
+                "{written:?}"
+            );
+            assert!(collector_rx.recv().await.is_none());
+        }
     }
 
     #[tokio::test(start_paused = true)]
