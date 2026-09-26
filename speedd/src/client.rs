@@ -120,11 +120,14 @@ impl Client {
                 self.on_message(message)
             }
             Event::Garbage(error) => {
-                Action::SendAndClose(server::Message::Error(match self.role {
-                    Role::Unidentified => format!("... who even are you? {error:?}"),
-                    Role::Camera(_) => format!("Nahh... you're just a camera. {error:?}"),
-                    Role::Dispatcher(_) => format!("Nahh... you're just a dispatcher. {error:?}"),
-                }))
+                // The error stays in the log: formatted, it can be longer than an error message may be.
+                tracing::warn!(?error, "Received garbage");
+                let text = match self.role {
+                    Role::Unidentified => "... who even are you? Illegal message.",
+                    Role::Camera(_) => "Nahh... you're just a camera. Illegal message.",
+                    Role::Dispatcher(_) => "Nahh... you're just a dispatcher. Illegal message.",
+                };
+                Action::SendAndClose(server::Message::Error(text.to_string()))
             }
             Event::Heartbeat => {
                 tracing::trace!("Sending heartbeat");
@@ -347,11 +350,13 @@ mod test {
             .await;
 
         assert_eq!(client.role, Role::Camera(camera(123, 8, 60)));
-        // With `RUST_BACKTRACE` set, the debug-formatted error carries a backtrace.
-        assert!(matches!(
-            written.as_slice(),
-            [server::Message::Error(text)] if text.starts_with("Nahh... you're just a camera. bad")
-        ));
+        // Not the debug-formatted error: with `RUST_BACKTRACE` set, that carries a backtrace.
+        assert_eq!(
+            written,
+            [server::Message::Error(
+                "Nahh... you're just a camera. Illegal message.".to_string()
+            )]
+        );
     }
 
     #[tokio::test]

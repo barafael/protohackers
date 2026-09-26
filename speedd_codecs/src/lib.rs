@@ -13,6 +13,12 @@ pub type Limit = u16;
 pub const SECONDS_PER_DAY: u32 = 86400;
 //pub const SECONDS_PER_DAY: u32 = 1000;
 
+/// The length prefix of a `str`, which holds at most 255 bytes.
+fn str_len(text: &str) -> anyhow::Result<u8> {
+    u8::try_from(text.len())
+        .map_err(|_| anyhow::anyhow!("{} bytes do not fit in a str", text.len()))
+}
+
 #[cfg(test)]
 mod test {
     use crate::{camera::Camera, plate::PlateRecord};
