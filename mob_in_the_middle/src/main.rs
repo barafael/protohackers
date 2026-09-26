@@ -109,3 +109,46 @@ fn replace(line: &str) -> String {
     }
     words.join(" ")
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn rewrites_boguscoin_addresses() {
+        assert_eq!(
+            replace("Hi alice, please send payment to 7iKDZEwPZSqIvDnHvVN2r0hUWXD5rHX"),
+            format!("Hi alice, please send payment to {TONYS_ADDRESS}")
+        );
+        assert_eq!(
+            replace("7F1u3wSD5RbOHQmupo9nx4TnhQ or 7LOrwbDlS8NujgjddyogWgIM93MV5N2VR"),
+            format!("{TONYS_ADDRESS} or {TONYS_ADDRESS}")
+        );
+    }
+
+    #[test]
+    fn leaves_other_words_alone() {
+        for line in [
+            "too short: 7F1u3wSD5RbOHQmupo9nx4Tnh",
+            "too long: 7LOrwbDlS8NujgjddyogWgIM93MV5N2VRxyz",
+            "not a 7: 8F1u3wSD5RbOHQmupo9nx4TnhQ",
+            "not alphanumeric: 7F1u3wSD5RbOHQmupo9nx4TnhQ-1234",
+        ] {
+            assert_eq!(replace(line), line);
+        }
+    }
+
+    #[tokio::test]
+    async fn forwards_complete_lines_only() {
+        let input: &[u8] = b"Hi, send to 7F1u3wSD5RbOHQmupo9nx4TnhQ\nnot a complete line";
+        let mut output = Vec::new();
+
+        let result = forward(input, &mut output).await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            format!("Hi, send to {TONYS_ADDRESS}\n")
+        );
+    }
+}
