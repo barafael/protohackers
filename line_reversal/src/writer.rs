@@ -125,7 +125,7 @@ impl Writer {
                         tell(close, self.id).await;
                         break;
                     }
-                    self.chunks.extend(buffer[..len].iter().map(|c| *c as char).chunks(1000 - 17).into_iter().map(Iterator::collect::<String>).map(|s| lrcp_codec::escape::escape(&s)));
+                    self.chunks.extend(buffer[..len].iter().map(|c| *c as char).chunks(1000 - 17).into_iter().map(Iterator::collect::<String>));
                     let item = self.chunks.pop_front().unwrap();
                     tracing::debug!(?item);
                     self.awaiting_ack = Some(Frame::Ack {
@@ -222,6 +222,28 @@ mod test {
                 ..Writer::with_id(1)
             }
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn counts_unescaped_bytes() {
+        let application: &[u8] = b"a/b\\c\n";
+        let (sent, mut peer) = futures::channel::mpsc::unbounded();
+        let (inbox, rx) = mpsc::channel(8);
+        let (reader, _reader_rx) = mpsc::channel(8);
+
+        let peer = async move {
+            let frame = peer.next().await;
+            inbox.send(ack(6)).await.unwrap();
+            (frame, inbox)
+        };
+        let (writer, (frame, _inbox)) = tokio::join!(
+            Writer::with_id(1).event_loop(application, sent, rx, reader),
+            peer,
+        );
+
+        // Escaping is up to the codec.
+        assert_eq!(frame, Some(data(0, "a/b\\c\n")));
+        assert_eq!(writer.length, 6);
     }
 
     #[tokio::test(start_paused = true)]

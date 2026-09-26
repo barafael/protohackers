@@ -1,4 +1,4 @@
-use crate::frame::Frame;
+use crate::{escape::escape, frame::Frame};
 use anyhow::Context;
 use bytes::{Buf, BufMut, BytesMut};
 use std::str::FromStr;
@@ -47,6 +47,8 @@ impl Encoder<Frame> for Lrcp {
                 position,
                 data,
             } => {
+                // Like the decoder, the frame holds the data as the application sees it.
+                let data = escape(&data);
                 anyhow::ensure!(
                     data.len() + 17 < 1000,
                     "Data length exceeds framing limit of <1000 byte."
@@ -61,5 +63,23 @@ impl Encoder<Frame> for Lrcp {
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn escapes_data() {
+        let frame = Frame::Data {
+            session: 1,
+            position: 0,
+            data: r"a/b\c".to_string(),
+        };
+        let mut buffer = BytesMut::new();
+        Lrcp.encode(frame.clone(), &mut buffer).unwrap();
+        assert_eq!(&buffer[..], br"/data/1/0/a\/b\\c/");
+        assert_eq!(Lrcp.decode(&mut buffer).unwrap(), Some(frame));
     }
 }

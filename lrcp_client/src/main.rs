@@ -31,11 +31,11 @@ async fn main() -> anyhow::Result<()> {
     let data = Frame::Data {
         session: 123,
         position: 0,
-        data: r"some data with \/ sla\\h".to_string(),
+        data: r"some data with / sla\h".to_string(),
     };
     let ack = Frame::Ack {
         session: 123,
-        length: 23,
+        length: 22,
     };
     println!(
         "RON input, such as:\n{}\nor\n{}\nor\n{}",
