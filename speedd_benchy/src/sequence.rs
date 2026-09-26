@@ -1,13 +1,11 @@
 use std::{
     collections::{BTreeMap, HashSet},
-    net::SocketAddr,
     time::Duration,
 };
 
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 use speedd_codecs::{camera::Camera, plate::PlateRecord, Mile, SECONDS_PER_DAY};
-use tokio::task::JoinHandle;
 
 use crate::{
     camera_client::{Action, CameraClient},
@@ -137,16 +135,10 @@ fn license_plate(rng: &mut ThreadRng) -> String {
 }
 
 impl Sequence {
-    pub async fn run(
-        self,
-        addr: SocketAddr,
-    ) -> anyhow::Result<Vec<JoinHandle<anyhow::Result<()>>>> {
-        let mut handles = Vec::new();
-        for road in self.roads {
-            for (_, camera) in road.cameras {
-                handles.push(tokio::spawn(async move { camera.run(addr).await }));
-            }
-        }
-        Ok(handles)
+    /// The camera clients of all roads, ready to be run.
+    pub fn into_cameras(self) -> impl Iterator<Item = CameraClient> {
+        self.roads
+            .into_iter()
+            .flat_map(|road| road.cameras.into_values())
     }
 }
