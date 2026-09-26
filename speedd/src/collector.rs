@@ -1,5 +1,4 @@
 use async_channel as mpmc;
-use itertools::Itertools;
 use speedd_codecs::{
     camera::Camera, plate::PlateRecord, server::TicketRecord, Limit, Mile, Road, Timestamp,
     SECONDS_PER_DAY,
@@ -87,6 +86,8 @@ impl Collector {
     }
 
     /// Admit the first ticket which does not touch an already ticketed day, marking its days as ticketed.
+    ///
+    /// All the tickets share the day of the new observation, so only the first can be admitted anyway.
     fn admit(&mut self, tickets: Vec<TicketRecord>) -> Option<TicketRecord> {
         for ticket in tickets {
             tracing::info!("Violation found: {ticket:?}");
@@ -175,8 +176,9 @@ impl Collector {
         }
     }
 
+    /// The days a ticket from `timestamp1` to `timestamp2` covers, both ends included.
     fn days(timestamp1: u32, timestamp2: u32) -> impl Iterator<Item = u32> {
-        (timestamp1..timestamp2).map(Self::day).unique()
+        Self::day(timestamp1)..=Self::day(timestamp2)
     }
 
     fn day(timestamp: u32) -> u32 {
@@ -279,6 +281,33 @@ pub mod test {
             collector.on_plate(plate("FAST", 120), camera(1, 20, 60)),
             None
         );
+    }
+
+    #[test]
+    fn a_ticket_covers_the_day_it_ends_on() {
+        let mut collector = Collector::default();
+        assert_eq!(
+            collector.on_plate(plate("FAST", 86_340), camera(1, 0, 60)),
+            None
+        );
+        // Ends on the first second of day 1.
+        let ticket = collector.on_plate(plate("FAST", 86_400), camera(1, 10, 60));
+        assert_eq!(ticket.map(|t| t.speed), Some(60000));
+        assert_eq!(collector.ticketed_days["FAST"], HashSet::from([0, 1]));
+
+        // Speeding again on day 1.
+        assert_eq!(
+            collector.on_plate(plate("FAST", 86_460), camera(1, 20, 60)),
+            None
+        );
+    }
+
+    #[test]
+    fn days_are_counted_not_seconds() {
+        assert!(Collector::days(10, 20).eq([0]));
+        assert!(Collector::days(86_399, 3 * 86_400).eq(0..=3));
+        // Every day until the end of time: fast only if not stepping through ~4e9 seconds.
+        assert!(Collector::days(0, u32::MAX).eq(0..=49_710));
     }
 
     #[test]
