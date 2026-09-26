@@ -32,7 +32,9 @@ async fn main() -> anyhow::Result<()> {
             let input = std::fs::read_to_string(instance)?;
             let sequence: Sequence = ron::from_str(&input)?;
 
-            let handles = sequence.run(server).await?;
+            let handles = sequence
+                .into_cameras()
+                .map(|camera| tokio::spawn(async move { camera.run(server).await }));
             try_join_all(handles)
                 .await
                 .context("Failed to join")?
