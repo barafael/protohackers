@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
-use crate::unescape::unescape;
+use crate::{unescape::unescape, ESCAPE, MAX_MESSAGE_LEN};
 
 macro_rules! regex {
     ($re:literal $(,)?) => {{
@@ -33,6 +33,39 @@ impl Frame {
             Self::Ack { session, .. } | Self::Data { session, .. } => *session,
         }
     }
+
+    /// Cut `data`, which starts at `position` in the session's stream,
+    /// into data frames which fit into a message once escaped.
+    pub fn data(session: u32, mut position: u32, mut data: &str) -> Vec<Self> {
+        let mut frames = Vec::new();
+        while !data.is_empty() {
+            let (chunk, rest) = data.split_at(fitting(session, position, data));
+            frames.push(Self::Data {
+                session,
+                position,
+                data: chunk.to_string(),
+            });
+            position += chunk.len() as u32;
+            data = rest;
+        }
+        frames
+    }
+}
+
+/// How many bytes of `data` fit into a data frame at `position`, once escaped.
+fn fitting(session: u32, position: u32, data: &str) -> usize {
+    let mut room = MAX_MESSAGE_LEN - format!("/data/{session}/{position}//").len();
+    for (index, ch) in data.char_indices() {
+        let escaped = match ch {
+            '/' | ESCAPE => 2,
+            _ => ch.len_utf8(),
+        };
+        if escaped > room {
+            return index;
+        }
+        room -= escaped;
+    }
+    data.len()
 }
 
 impl FromStr for Frame {
