@@ -101,11 +101,11 @@ where
             tracing::warn!("EOF");
             break;
         }
-        if !line.ends_with('\n') {
+        let Some(message) = line.strip_suffix('\n') else {
             tracing::warn!("Disconnected without sending newline");
             break;
-        }
-        let rewritten = replace(&line);
+        };
+        let rewritten = replace(message);
         writer
             .write_all(format!("{rewritten}\n").as_bytes())
             .await?;
@@ -114,19 +114,27 @@ where
     Err(anyhow::anyhow!("Connection closed"))
 }
 
-fn replace(line: &str) -> String {
-    let mut words: Vec<&str> = line.split_ascii_whitespace().collect();
+/// Replace the Boguscoin addresses in a chat message (without its newline), and nothing else.
+///
+/// An address is delimited by spaces or the ends of the message.
+fn replace(message: &str) -> String {
+    message
+        .split(' ')
+        .map(|word| {
+            if is_boguscoin_address(word) {
+                TONYS_ADDRESS
+            } else {
+                word
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
-    for word in &mut words {
-        if word.starts_with('7')
-            && word.len() >= 26
-            && word.len() <= 35
-            && word.chars().all(|ch| ch.is_ascii_alphanumeric())
-        {
-            *word = TONYS_ADDRESS;
-        }
-    }
-    words.join(" ")
+fn is_boguscoin_address(word: &str) -> bool {
+    word.starts_with('7')
+        && (26..=35).contains(&word.len())
+        && word.chars().all(|ch| ch.is_ascii_alphanumeric())
 }
 
 #[cfg(test)]
@@ -152,6 +160,21 @@ mod test {
             "too long: 7LOrwbDlS8NujgjddyogWgIM93MV5N2VRxyz",
             "not a 7: 8F1u3wSD5RbOHQmupo9nx4TnhQ",
             "not alphanumeric: 7F1u3wSD5RbOHQmupo9nx4TnhQ-1234",
+        ] {
+            assert_eq!(replace(line), line);
+        }
+    }
+
+    #[test]
+    fn leaves_whitespace_alone() {
+        assert_eq!(
+            replace("  two  spaces 7F1u3wSD5RbOHQmupo9nx4TnhQ  and\ta tab "),
+            format!("  two  spaces {TONYS_ADDRESS}  and\ta tab ")
+        );
+        // Only spaces delimit an address.
+        for line in [
+            "tab\t7F1u3wSD5RbOHQmupo9nx4TnhQ",
+            "7F1u3wSD5RbOHQmupo9nx4TnhQ\ttab",
         ] {
             assert_eq!(replace(line), line);
         }
