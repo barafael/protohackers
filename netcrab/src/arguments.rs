@@ -1,5 +1,5 @@
 use anyhow::Context;
-use clap::{arg, Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::{fmt::Display, net::SocketAddr};
 
 pub fn parse_hex_digit(s: &str) -> anyhow::Result<u8> {

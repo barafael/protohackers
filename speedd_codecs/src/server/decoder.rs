@@ -15,8 +15,8 @@ impl Decoder for MessageDecoder {
         match src.first() {
             Some(0x10) => {
                 let Some(len) = src.get(1) else {
-                        return Ok(None);
-                    };
+                    return Ok(None);
+                };
                 if src.remaining() < 1 + 1 + *len as usize {
                     return Ok(None);
                 }
@@ -26,8 +26,8 @@ impl Decoder for MessageDecoder {
             }
             Some(0x21) => {
                 let Some(len) = src.get(1) else {
-                        return Ok(None);
-                    };
+                    return Ok(None);
+                };
                 if src.remaining() < 1 + 1 + *len as usize + 16 {
                     return Ok(None);
                 }

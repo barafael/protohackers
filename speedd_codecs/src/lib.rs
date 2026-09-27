@@ -13,6 +13,12 @@ pub type Limit = u16;
 pub const SECONDS_PER_DAY: u32 = 86400;
 //pub const SECONDS_PER_DAY: u32 = 1000;
 
+/// The length prefix of a `str`, which holds at most 255 bytes.
+fn str_len(text: &str) -> anyhow::Result<u8> {
+    u8::try_from(text.len())
+        .map_err(|_| anyhow::anyhow!("{} bytes do not fit in a str", text.len()))
+}
+
 #[cfg(test)]
 mod test {
     use crate::{camera::Camera, plate::PlateRecord};
@@ -25,19 +31,15 @@ mod test {
             .read(&[0x80, 0x00, 0x7b, 0x00, 0x08, 0x00, 0x3c])
             .read(&[0x20, 0x04, 0x55, 0x4e, 0x31, 0x58, 0x00, 0x00, 0x00, 0x00])
             .build();
-        let mut client_1 = tokio_util::codec::FramedRead::new(
-            client_1,
-            crate::client::decoder::MessageDecoder,
-        );
+        let mut client_1 =
+            tokio_util::codec::FramedRead::new(client_1, crate::client::decoder::MessageDecoder);
 
         let client_2 = Builder::new()
             .read(&[0x80, 0x00, 0x7b, 0x00, 0x09, 0x00, 0x3c])
             .read(&[0x20, 0x04, 0x55, 0x4e, 0x31, 0x58, 0x00, 0x00, 0x00, 0x2d])
             .build();
-        let mut client_2 = tokio_util::codec::FramedRead::new(
-            client_2,
-            crate::client::decoder::MessageDecoder,
-        );
+        let mut client_2 =
+            tokio_util::codec::FramedRead::new(client_2, crate::client::decoder::MessageDecoder);
 
         assert_eq!(
             client_1.next().await.unwrap().unwrap(),

@@ -15,8 +15,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@master
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v5
+      # Nightly: speedd_codecs and speedd_benchy use unstable features.
+      - uses: dtolnay/rust-toolchain@nightly
         with:
-            toolchain: nightly
-            override: true
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Build
+        run: cargo build --workspace --all-targets
+      - name: Test
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
