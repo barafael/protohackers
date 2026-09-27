@@ -1,9 +1,13 @@
 use std::{
     env,
+    future::Future,
     net::{SocketAddr, ToSocketAddrs},
 };
 use tokio::{
-    io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter},
+    io::{
+        self, AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader,
+        BufWriter,
+    },
     net::{TcpListener, TcpStream},
     task::JoinSet,
 };
@@ -49,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
                 tracing::info!("Accepted client from {}", addr);
-                sessions.spawn(proxy(client, addr, server_addr));
+                sessions.spawn(proxy(client, addr, TcpStream::connect(server_addr)));
             }
             Some(finished) = sessions.join_next() => match finished {
                 Ok(addr) => tracing::info!("Disconnected {addr}"),
@@ -60,22 +64,35 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Proxy one client until either side hangs up.
-async fn proxy(mut client: TcpStream, addr: SocketAddr, server_addr: SocketAddr) -> SocketAddr {
-    let (client_reader, client_writer) = client.split();
-    let (client_reader, client_writer) =
-        (BufReader::new(client_reader), BufWriter::new(client_writer));
+/// Relay one client's chat through its own upstream connection, until either side hangs up.
+async fn proxy<C, U>(
+    client: C,
+    addr: SocketAddr,
+    upstream: impl Future<Output = io::Result<U>>,
+) -> SocketAddr
+where
+    C: AsyncRead + AsyncWrite,
+    U: AsyncRead + AsyncWrite,
+{
+    let upstream = match upstream.await {
+        Ok(upstream) => upstream,
+        Err(error) => {
+            // Dropping the client closes its connection.
+            tracing::error!(?error, "Cannot connect upstream, closing client connection");
+            return addr;
+        }
+    };
+    let (client_reader, client_writer) = io::split(client);
+    let (upstream_reader, upstream_writer) = io::split(upstream);
 
-    let mut upstream = TcpStream::connect(server_addr).await.unwrap();
-    let (upstream_reader, upstream_writer) = upstream.split();
-    let (upstream_reader, upstream_writer) = (
-        BufReader::new(upstream_reader),
+    let client_to_upstream = forward(
+        BufReader::new(client_reader),
         BufWriter::new(upstream_writer),
     );
-
-    let client_to_upstream = forward(client_reader, upstream_writer);
-
-    let upstream_to_client = forward(upstream_reader, client_writer);
+    let upstream_to_client = forward(
+        BufReader::new(upstream_reader),
+        BufWriter::new(client_writer),
+    );
 
     tokio::select! {
         err = client_to_upstream => {
@@ -140,6 +157,7 @@ fn is_boguscoin_address(word: &str) -> bool {
 #[cfg(test)]
 mod test {
     use super::*;
+    use tokio::io::AsyncReadExt;
 
     #[test]
     fn rewrites_boguscoin_addresses() {
@@ -178,6 +196,61 @@ mod test {
         ] {
             assert_eq!(replace(line), line);
         }
+    }
+
+    fn addr() -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], 1))
+    }
+
+    #[tokio::test]
+    async fn relays_both_ways() {
+        let (client, proxied_client) = io::duplex(1024);
+        let (proxied_upstream, upstream) = io::duplex(1024);
+        let connected = std::future::ready(Ok(proxied_upstream));
+
+        let conversation = async move {
+            let (mut client, mut upstream) = (BufReader::new(client), BufReader::new(upstream));
+            let mut from_upstream = String::new();
+            let mut from_client = String::new();
+
+            upstream
+                .write_all(b"[bob] Send to 7F1u3wSD5RbOHQmupo9nx4TnhQ\n")
+                .await
+                .unwrap();
+            client.read_line(&mut from_upstream).await.unwrap();
+            client
+                .write_all(b"Send to  7iKDZEwPZSqIvDnHvVN2r0hUWXD5rHX, not bob\n")
+                .await
+                .unwrap();
+            upstream.read_line(&mut from_client).await.unwrap();
+            // Hanging up ends the proxy.
+            (from_upstream, from_client)
+        };
+        let (proxied, (from_upstream, from_client)) =
+            tokio::join!(proxy(proxied_client, addr(), connected), conversation);
+
+        assert_eq!(proxied, addr());
+
+        assert_eq!(from_upstream, format!("[bob] Send to {TONYS_ADDRESS}\n"));
+        // Followed by a comma, so not an address.
+        assert_eq!(
+            from_client,
+            "Send to  7iKDZEwPZSqIvDnHvVN2r0hUWXD5rHX, not bob\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn closes_client_when_upstream_is_unreachable() {
+        let (mut client, proxied_client) = io::duplex(64);
+        let unreachable = std::future::ready(Err::<io::DuplexStream, _>(io::Error::from(
+            io::ErrorKind::ConnectionRefused,
+        )));
+
+        assert_eq!(proxy(proxied_client, addr(), unreachable).await, addr());
+
+        let mut received = Vec::new();
+        client.read_to_end(&mut received).await.unwrap();
+        assert!(received.is_empty());
     }
 
     #[tokio::test]
